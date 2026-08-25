@@ -498,14 +498,36 @@ Panel {
                 var profile = checkExistingProc._profile
 
                 // Close all existing windows
+                var addrs = []
                 for (var i = 0; i < existing.length; i++) {
-                    var addr = existing[i].address
-                    Quickshell.execDetached(["bash", "-lc",
-                        "hyprctl dispatch \"hl.dsp.window.close({address = '" + addr + "'})\""])
+                    addrs.push(existing[i].address)
                 }
+                closeProc._addrs = addrs
+                closeProc._profile = profile
+                closeProc._step = 0
+                if (addrs.length > 0) {
+                    closeProc.command = ["hyprctl", "dispatch", "hl.dsp.window.close({address = '" + addrs[0] + "'})"]
+                    closeProc.running = true
+                } else {
+                    spawnWindows(profile.windows, profile)
+                }
+            }
+        }
+    }
 
-                // Spawn all windows from the new profile
-                spawnWindows(profile.windows, profile)
+    Process {
+        id: closeProc
+        property var _addrs: []
+        property var _profile: null
+        property int _step: 0
+        command: []
+        onExited: {
+            _step++
+            if (_step < _addrs.length) {
+                command = ["hyprctl", "dispatch", "hl.dsp.window.close({address = '" + _addrs[_step] + "'})"]
+                running = true
+            } else {
+                spawnWindows(_profile.windows, _profile)
             }
         }
     }
