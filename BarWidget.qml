@@ -511,7 +511,8 @@ Panel {
                 var killCmds = []
                 for (var i = 0; i < existing.length; i++) {
                     var win = existing[i]
-                    var exe = resolveExe(win.class).split(" ").pop()
+                    var exeParts = resolveExe(win.class).split(" ")
+                    var exe = exeParts[0]
                     console.log("WSRESTORE: killing " + win.class + " (exe=" + exe + ")")
                     killCmds.push("hyprctl eval \"hl.exec_cmd('killall " + exe + "')\"")
                 }
