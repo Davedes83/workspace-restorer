@@ -86,10 +86,6 @@ Panel {
         if (known[className]) return known[className]
         return lower
     }
-        if (known[lower]) return known[lower]
-        if (known[className]) return known[className]
-        return lower
-    }
 
     // --- Bar Button ---
 
