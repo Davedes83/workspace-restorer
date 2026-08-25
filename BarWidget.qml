@@ -87,17 +87,6 @@ Panel {
         return lower
     }
 
-    function killExe(className) {
-        var lower = className.toLowerCase()
-        var killMap = {
-            "vivaldi-stable": "vivaldi-bin"
-        }
-        if (killMap[lower]) return killMap[lower]
-        if (killMap[className]) return killMap[className]
-        var exeParts = resolveExe(className).split(" ")
-        return exeParts[0]
-    }
-
     // --- Bar Button ---
 
     BarIconButton {
@@ -517,14 +506,13 @@ Panel {
                     return
                 }
 
-                // Close all existing windows by killing app processes
+                // Close all existing windows by address (universal - works for any app)
                 console.log("WSRESTORE: closing " + existing.length + " windows")
                 var killCmds = []
                 for (var i = 0; i < existing.length; i++) {
                     var win = existing[i]
-                    var exe = killExe(win.class)
-                    console.log("WSRESTORE: killing " + win.class + " (exe=" + exe + ")")
-                    killCmds.push("hyprctl eval \"hl.exec_cmd('killall " + exe + "')\"")
+                    console.log("WSRESTORE: closing " + win.class + " pid=" + win.pid)
+                    killCmds.push("hyprctl eval \"hl.exec_cmd('kill " + win.pid + "')\"")
                 }
                 if (killCmds.length > 0) {
                     var killScript = killCmds.join("; ")
