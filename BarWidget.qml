@@ -69,9 +69,9 @@ Panel {
     function resolveExe(className) {
         var lower = className.toLowerCase()
         var known = {
-            "org.omarchy.opencode": "kitty opencode",
+            "org.omarchy.opencode": "kitty --class org.omarchy.opencode -- opencode",
             "org.qbittorrent.qbittorrent": "qbittorrent",
-            "org.gnome.nautilus": "nautilus",
+            "org.gnome.nautilus": "nautilus --new-window",
             "com.github.xournalpp.xournalpp": "xournalpp",
             "io.github.celluloid.celluloid": "celluloid",
             "org.mozilla.firefox": "firefox",
@@ -82,6 +82,10 @@ Panel {
             "com.valvesoftware.steam": "steam",
             "heroic": "heroic"
         }
+        if (known[lower]) return known[lower]
+        if (known[className]) return known[className]
+        return lower
+    }
         if (known[lower]) return known[lower]
         if (known[className]) return known[className]
         return lower
