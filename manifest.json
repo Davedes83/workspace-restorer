@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "davedes.workspace-restorer",
+  "name": "Workspace Restorer",
+  "version": "0.1.0",
+  "author": "Davedes",
+  "license": "MIT",
+  "description": "Snapshot and restore Hyprland workspace layouts as named profiles.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Workspace Restorer",
+    "description": "Snapshot and restore workspace layouts",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

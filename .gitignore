@@ -1,0 +1,5 @@
+# Omarchy workspace
+*.bak
+*.swp
+*~
+.DS_Store
