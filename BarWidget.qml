@@ -497,38 +497,32 @@ Panel {
                 var existing = JSON.parse(text)
                 var profile = checkExistingProc._profile
 
+                if (!existing || existing.length === 0) {
+                    pendingSpawns._windows = profile.windows
+                    pendingSpawns._index = 0
+                    pendingSpawns._total = profile.windows.length
+                    pendingSpawns._profile = profile
+                    spawnNext()
+                    return
+                }
+
                 // Close all existing windows
                 console.log("WSRESTORE: closing " + existing.length + " windows")
-                var scriptLines = ["#!/bin/bash"]
+                var batchCmds = []
                 for (var i = 0; i < existing.length; i++) {
                     var addr = existing[i].address
                     console.log("WSRESTORE: closing " + existing[i].class + " " + addr)
-                    scriptLines.push("hyprctl dispatch \"hl.dsp.window.close({address = '" + addr + "'})\"")
+                    batchCmds.push("dispatch hl.dsp.window.close({address = '" + addr + "'})")
                 }
-                writeScriptProc._script = scriptLines.join("\n")
-                writeScriptProc._profile = profile
-                writeScriptProc.command = ["bash", "-lc",
-                    "cat > /tmp/wsrestorer-close.sh << 'WSCLOSE'\n" + scriptLines.join("\n") + "\nWSCLOSE"]
-                writeScriptProc.running = true
+                closeExistingProc._profile = profile
+                closeExistingProc.command = ["hyprctl", "--batch", batchCmds.join(" ; ")]
+                closeExistingProc.running = true
             }
         }
     }
 
     Process {
-        id: writeScriptProc
-        property string _script: ""
-        property var _profile: null
-        command: []
-        onExited: {
-            Quickshell.execDetached(["chmod", "+x", "/tmp/wsrestorer-close.sh"])
-            execCloseProc._profile = _profile
-            execCloseProc.command = ["bash", "/tmp/wsrestorer-close.sh"]
-            execCloseProc.running = true
-        }
-    }
-
-    Process {
-        id: execCloseProc
+        id: closeExistingProc
         property var _profile: null
         command: []
         onExited: {
