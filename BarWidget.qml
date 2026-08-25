@@ -506,39 +506,36 @@ Panel {
                     return
                 }
 
-                // Build close script and write to /tmp
+                // Close all existing windows by killing app processes
                 console.log("WSRESTORE: closing " + existing.length + " windows")
-                var scriptLines = ["#!/bin/bash"]
+                var killCmds = []
                 for (var i = 0; i < existing.length; i++) {
-                    var addr = existing[i].address
-                    console.log("WSRESTORE: closing " + existing[i].class + " " + addr)
-                    scriptLines.push("hyprctl dispatch \"hl.dsp.window.close({address = '" + addr + "'})\"")
+                    var win = existing[i]
+                    var exe = resolveExe(win.class).split(" ").pop()
+                    console.log("WSRESTORE: killing " + win.class + " (exe=" + exe + ")")
+                    killCmds.push("hyprctl eval \"hl.exec_cmd('killall " + exe + "')\"")
                 }
-                var scriptContent = scriptLines.join("\n")
-                writeCloseScript._profile = profile
-                writeCloseScript.command = ["bash", "-lc", "cat > /tmp/wsrestorer-close.sh << 'WSCLOSE'\n" + scriptContent + "\nWSCLOSE"]
-                writeCloseScript.running = true
+                if (killCmds.length > 0) {
+                    var killScript = killCmds.join("; ")
+                    console.log("WSRESTORE: killScript=" + killScript)
+                    Quickshell.execDetached(["bash", "-lc", killScript])
+                }
+
+                // Wait for processes to die, then spawn new windows
+                pendingSpawns._windows = profile.windows
+                pendingSpawns._index = 0
+                pendingSpawns._total = profile.windows.length
+                pendingSpawns._profile = profile
+                killThenSpawnTimer.restart()
             }
         }
     }
 
-    Process {
-        id: writeCloseScript
-        property var _profile: null
-        command: []
-        onExited: {
-            execCloseScript._profile = _profile
-            execCloseScript.running = true
-        }
-    }
-
-    Process {
-        id: execCloseScript
-        property var _profile: null
-        command: ["bash", "/tmp/wsrestorer-close.sh"]
-        onExited: {
-            console.log("WSRESTORE: close script exited with code=" + exitCode)
-            spawnWindows(_profile.windows, _profile)
+    Timer {
+        id: killThenSpawnTimer
+        interval: 1000
+        onTriggered: {
+            spawnWindows(pendingSpawns._windows, pendingSpawns._profile)
         }
     }
 
