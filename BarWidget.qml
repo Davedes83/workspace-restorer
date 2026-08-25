@@ -69,7 +69,7 @@ Panel {
     function resolveExe(className) {
         var lower = className.toLowerCase()
         var known = {
-            "org.omarchy.opencode": "kitty --class org.omarchy.opencode -- opencode",
+            "org.omarchy.opencode": "kitty opencode",
             "org.qbittorrent.qbittorrent": "qbittorrent",
             "org.gnome.nautilus": "nautilus --new-window",
             "com.github.xournalpp.xournalpp": "xournalpp",
@@ -82,6 +82,21 @@ Panel {
             "com.valvesoftware.steam": "steam",
             "heroic": "heroic"
         }
+        if (known[lower]) return known[lower]
+        if (known[className]) return known[className]
+        return lower
+    }
+
+    function killExe(className) {
+        var lower = className.toLowerCase()
+        var killMap = {
+            "vivaldi-stable": "vivaldi-bin"
+        }
+        if (killMap[lower]) return killMap[lower]
+        if (killMap[className]) return killMap[className]
+        var exeParts = resolveExe(className).split(" ")
+        return exeParts[0]
+    }
         if (known[lower]) return known[lower]
         if (known[className]) return known[className]
         return lower
@@ -511,8 +526,7 @@ Panel {
                 var killCmds = []
                 for (var i = 0; i < existing.length; i++) {
                     var win = existing[i]
-                    var exeParts = resolveExe(win.class).split(" ")
-                    var exe = exeParts[0]
+                    var exe = killExe(win.class)
                     console.log("WSRESTORE: killing " + win.class + " (exe=" + exe + ")")
                     killCmds.push("hyprctl eval \"hl.exec_cmd('killall " + exe + "')\"")
                 }
