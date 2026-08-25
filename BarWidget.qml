@@ -506,7 +506,8 @@ Panel {
                 closeProc._profile = profile
                 closeProc._step = 0
                 if (addrs.length > 0) {
-                    closeProc.command = ["hyprctl", "dispatch", "hl.dsp.window.close({address = '" + addrs[0] + "'})"]
+                    closeProc._cmdStr = "hyprctl dispatch \"hl.dsp.window.close({address = '" + addrs[0] + "'})\""
+                    closeProc.command = ["bash", "-lc", closeProc._cmdStr]
                     closeProc.running = true
                 } else {
                     spawnWindows(profile.windows, profile)
@@ -520,11 +521,13 @@ Panel {
         property var _addrs: []
         property var _profile: null
         property int _step: 0
+        property string _cmdStr: ""
         command: []
         onExited: {
             _step++
             if (_step < _addrs.length) {
-                command = ["hyprctl", "dispatch", "hl.dsp.window.close({address = '" + _addrs[_step] + "'})"]
+                _cmdStr = "hyprctl dispatch \"hl.dsp.window.close({address = '" + _addrs[_step] + "'})\""
+                command = ["bash", "-lc", _cmdStr]
                 running = true
             } else {
                 spawnWindows(_profile.windows, _profile)
