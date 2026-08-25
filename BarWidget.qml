@@ -22,10 +22,10 @@ Panel {
 
     readonly property color hoverBg: bar
         ? Style.hoverFillFor(bar.foreground, Color.accent)
-        : Color.alpha(Color.bar.text, 0.1)
+        : Qt.darker(Color.bar.text, 1.1)
     readonly property color selectedBg: bar
         ? Style.selectedFillFor(bar.foreground, Color.accent)
-        : Color.alpha(Color.bar.text, 0.15)
+        : Qt.darker(Color.bar.text, 1.15)
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
@@ -123,14 +123,13 @@ Panel {
             visible: !root.showingNameInput
 
             PanelHero {
-                iconText: "󰆞"
                 title: "Workspace Restorer"
             }
 
             Rectangle {
                 width: parent.width
                 height: 1
-                color: Color.alpha(Color.bar.text, 0.15)
+                color: Qt.darker(Color.bar.text, 1.15)
             }
 
             Rectangle {
@@ -153,7 +152,8 @@ Panel {
                     Text {
                         text: root.isSnapshotting ? "Capturing..." : "Take Snapshot"
                         color: Color.bar.text
-                        font: Style.font.body
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.body
                         anchors.verticalCenter: parent.verticalCenter
                     }
                 }
@@ -180,7 +180,7 @@ Panel {
                         width: parent.width
                         height: 36
                         radius: Style.cornerRadius
-                        color: Color.alpha(Color.bar.text, 0.05)
+                        color: Qt.darker(Color.bar.text, 1.05)
 
                         Row {
                             anchors.fill: parent
@@ -189,7 +189,7 @@ Panel {
 
                             Text {
                                 text: "󰋋"
-                                color: Color.alpha(Color.bar.text, 0.5)
+                                color: Qt.darker(Color.bar.text, 1.5)
                                 font.pixelSize: 13
                                 anchors.verticalCenter: parent.verticalCenter
                             }
@@ -197,7 +197,8 @@ Panel {
                             Text {
                                 text: modelData
                                 color: Color.bar.text
-                                font: Style.font.body
+                                font.family: Style.font.family
+                        font.pixelSize: Style.font.body
                                 anchors.verticalCenter: parent.verticalCenter
                                 Layout.fillWidth: true
                                 width: parent.width - 70
@@ -207,14 +208,14 @@ Panel {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
                                     hoverEnabled: true
-                                    onContainsMouseChanged: parent.parent.parent.color = containsMouse ? root.hoverBg : Color.alpha(Color.bar.text, 0.05)
+                                    onContainsMouseChanged: parent.parent.parent.color = containsMouse ? root.hoverBg : Qt.darker(Color.bar.text, 1.05)
                                     onClicked: root.doRestore(modelData)
                                 }
                             }
 
                             Text {
                                 text: "󰆴"
-                                color: Color.alpha(Color.bar.text, 0.4)
+                                color: Qt.darker(Color.bar.text, 1.4)
                                 font.pixelSize: 13
                                 anchors.verticalCenter: parent.verticalCenter
 
@@ -222,7 +223,7 @@ Panel {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
                                     hoverEnabled: true
-                                    onContainsMouseChanged: parent.parent.color = containsMouse ? Color.alpha("#ff6666", 0.3) : "transparent"
+                                    onContainsMouseChanged: parent.parent.color = containsMouse ? "#663333" : "transparent"
                                     onClicked: root.doDelete(modelData)
                                 }
                             }
@@ -235,8 +236,10 @@ Panel {
 
             Text {
                 text: root.lastAction
-                color: Color.alpha(Color.bar.text, 0.4)
-                font: Style.font.italic
+                color: Qt.darker(Color.bar.text, 1.4)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+                font.italic: true
                 visible: root.lastAction !== ""
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
@@ -252,14 +255,13 @@ Panel {
             visible: root.showingNameInput
 
             PanelHero {
-                iconText: "󰆞"
                 title: "Save Snapshot"
             }
 
             Rectangle {
                 width: parent.width
                 height: 1
-                color: Color.alpha(Color.bar.text, 0.15)
+                color: Qt.darker(Color.bar.text, 1.15)
             }
 
             TextField {
@@ -268,12 +270,13 @@ Panel {
                 height: 36
                 placeholderText: "Profile name"
                 color: Color.bar.text
-                font: Style.font.body
+                font.family: Style.font.family
+                        font.pixelSize: Style.font.body
                 leftPadding: 10
                 background: Rectangle {
-                    color: Color.alpha(Color.bar.text, 0.08)
+                    color: Qt.darker(Color.bar.text, 1.08)
                     radius: Style.cornerRadius
-                    border.color: Color.alpha(Color.bar.text, 0.15)
+                    border.color: Qt.darker(Color.bar.text, 1.15)
                     border.width: 1
                 }
                 Keys.onReturnPressed: confirmSave()
@@ -290,7 +293,8 @@ Panel {
                     anchors.centerIn: parent
                     text: "  Save"
                     color: Color.bar.text
-                    font: Style.font.body
+                    font.family: Style.font.family
+                        font.pixelSize: Style.font.body
                 }
 
                 MouseArea {
@@ -306,20 +310,21 @@ Panel {
                 width: parent.width
                 height: 36
                 radius: Style.cornerRadius
-                color: Color.alpha(Color.bar.text, 0.05)
+                color: Qt.darker(Color.bar.text, 1.05)
 
                 Text {
                     anchors.centerIn: parent
                     text: "Cancel"
-                    color: Color.alpha(Color.bar.text, 0.5)
-                    font: Style.font.body
+                    color: Qt.darker(Color.bar.text, 1.5)
+                    font.family: Style.font.family
+                        font.pixelSize: Style.font.body
                 }
 
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     hoverEnabled: true
-                    onContainsMouseChanged: parent.parent.color = containsMouse ? Color.alpha(Color.bar.text, 0.1) : Color.alpha(Color.bar.text, 0.05)
+                    onContainsMouseChanged: parent.parent.color = containsMouse ? Qt.darker(Color.bar.text, 1.1) : Qt.darker(Color.bar.text, 1.05)
                     onClicked: {
                         root.showingNameInput = false
                         root.pendingSnapshot = null
@@ -512,10 +517,7 @@ Panel {
                 }
 
                 for (var k = 0; k < alreadyRunning.length; k++) {
-                    var rw = alreadyRunning[k]
-                    var moveCmd = "hyprctl dispatch movetoworkspace " + rw.workspace +
-                        ",address:" + rw._existingAddress
-                    Quickshell.execDetached(["bash", "-lc", moveCmd])
+                    // window.move doesn't support address targeting; skip move
                 }
 
                 spawnWindows(toSpawn, profile)
@@ -541,7 +543,16 @@ Panel {
     Timer {
         id: spawnTimer
         interval: root.spawnDelay
-        onTriggered: spawnNext()
+        onTriggered: {
+            // Move the just-launched (focused) window to target workspace
+            var move = pendingSpawns._pendingMove
+            if (move && move.workspace) {
+                var moveCmd = "hyprctl dispatch 'hl.dsp.window.move({workspace = \"" + move.workspace + "\"})'"
+                Quickshell.execDetached(["bash", "-lc", moveCmd])
+                pendingSpawns._pendingMove = null
+            }
+            spawnNext()
+        }
     }
 
     function spawnNext() {
@@ -554,11 +565,12 @@ Panel {
 
         var win = data._windows[data._index]
         var cmd = win.command || win.class.toLowerCase()
-        var dispatch = "hyprctl dispatch exec " +
-            "[workspace " + win.workspace + ":silent] " +
-            "[monitor " + win.monitor + ":silent] " +
-            cmd
-        Quickshell.execDetached(["bash", "-lc", dispatch])
+
+        // Launch app directly (hyprctl dispatch exec no longer works in 0.56+)
+        Quickshell.execDetached(["bash", "-lc", cmd])
+
+        // Store target workspace/monitor for post-launch move
+        data._pendingMove = { workspace: win.workspace, monitor: win.monitor }
         data._index++
         spawnTimer.restart()
     }
@@ -567,7 +579,8 @@ Panel {
         _windows: [],
         _index: 0,
         _total: 0,
-        _profile: null
+        _profile: null,
+        _pendingMove: null
     })
 
     Timer {
@@ -578,24 +591,9 @@ Panel {
     }
 
     function applyLayout(windows) {
-        var count = 0
-        for (var i = 0; i < windows.length; i++) {
-            var win = windows[i]
-            if (win.floating && win.position) {
-                var posCmd = "hyprctl dispatch movewindowpixel exact " +
-                    win.position[0] + " " + win.position[1] + ",class:" + win.class
-                Quickshell.execDetached(["bash", "-lc", posCmd])
-            }
-            if (win.splitRatio && win.splitRatio !== 1.0) {
-                var ratioCmd = "hyprctl dispatch splitratio " +
-                    win.splitRatio + ",class:" + win.class
-                Quickshell.execDetached(["bash", "-lc", ratioCmd])
-                count++
-            }
-        }
         root.lastAction = "Restored " + windows.length + " windows"
         root.notify("Workspace restored",
-            windows.length + " windows launched" + (count > 0 ? ", " + count + " ratios applied" : ""))
+            windows.length + " windows launched")
     }
 
     // --- Delete ---
