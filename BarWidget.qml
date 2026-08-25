@@ -501,7 +501,7 @@ Panel {
                 for (var i = 0; i < existing.length; i++) {
                     var addr = existing[i].address
                     Quickshell.execDetached(["bash", "-lc",
-                        "hyprctl dispatch closewindow address:" + addr])
+                        "hyprctl dispatch \"hl.dsp.window.close({address = '" + addr + "'})\""])
                 }
 
                 // Spawn all windows from the new profile
