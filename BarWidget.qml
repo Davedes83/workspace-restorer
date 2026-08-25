@@ -97,10 +97,6 @@ Panel {
         var exeParts = resolveExe(className).split(" ")
         return exeParts[0]
     }
-        if (known[lower]) return known[lower]
-        if (known[className]) return known[className]
-        return lower
-    }
 
     // --- Bar Button ---
 
