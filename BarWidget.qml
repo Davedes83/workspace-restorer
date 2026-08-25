@@ -18,11 +18,22 @@ Panel {
     property string profileDir: Quickshell.env("HOME") + "/.config/omarchy/workspace-restorer"
     property var pendingSnapshot: null
     property bool showingNameInput: false
+    property var monitorMap: ({})
+
+    readonly property color hoverBg: bar
+        ? Style.hoverFillFor(bar.foreground, Color.accent)
+        : Color.alpha(Color.bar.text, 0.1)
+    readonly property color selectedBg: bar
+        ? Style.selectedFillFor(bar.foreground, Color.accent)
+        : Color.alpha(Color.bar.text, 0.15)
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
-    Component.onCompleted: refreshProfiles()
+    Component.onCompleted: {
+        refreshProfiles()
+        buildMonitorMap()
+    }
 
     function notify(summary, body) {
         Quickshell.execDetached(["notify-send", "-a", "Workspace Restorer", "-i", "preferences-desktop-workspaces", summary, body || ""])
@@ -33,6 +44,47 @@ Panel {
         var pad = function(n) { return n < 10 ? "0" + n : "" + n }
         return "snapshot-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
                "-" + pad(d.getHours()) + pad(d.getMinutes())
+    }
+
+    function buildMonitorMap() {
+        monitorMapProc.running = true
+    }
+
+    Process {
+        id: monitorMapProc
+        command: ["hyprctl", "-j", "monitors"]
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                var monitors = JSON.parse(text)
+                var map = {}
+                for (var i = 0; i < monitors.length; i++) {
+                    map[monitors[i].id] = monitors[i].name
+                }
+                root.monitorMap = map
+            }
+        }
+    }
+
+    function resolveExe(className) {
+        var lower = className.toLowerCase()
+        var known = {
+            "org.omarchy.opencode": "opencode",
+            "org.qbittorrent.qbittorrent": "qbittorrent",
+            "org.gnome.nautilus": "nautilus",
+            "com.github.xournalpp.xournalpp": "xournalpp",
+            "io.github.celluloid.celluloid": "celluloid",
+            "org.mozilla.firefox": "firefox",
+            "com.spotify.client": "spotify",
+            "org.telegram.desktop": "telegram-desktop",
+            "io.github.qutebrowser.qutebrowser": "qutebrowser",
+            "net.davidotek.pupgui2": "lutris",
+            "com.valvesoftware.steam": "steam",
+            "heroic": "heroic"
+        }
+        if (known[lower]) return known[lower]
+        if (known[className]) return known[className]
+        return lower
     }
 
     // --- Bar Button ---
@@ -56,7 +108,7 @@ Panel {
         bar: root.bar
         open: root.opened
         contentWidth: 280
-        contentHeight: showingNameInput ? 200 : 380
+        contentHeight: showingNameInput ? 220 : 400
 
         PanelKeyCatcher {
             id: keyCatcher
@@ -66,59 +118,56 @@ Panel {
 
         Column {
             anchors.fill: parent
-            anchors.margins: 10
-            spacing: 6
+            anchors.margins: 12
+            spacing: 8
             visible: !root.showingNameInput
 
-            Row {
-                width: parent.width
-                spacing: 8
-
-                Text {
-                    text: "󰆞"
-                    color: Color.bar.text
-                    font.pixelSize: 16
-                }
-
-                Text {
-                    text: "Workspace Restorer"
-                    color: Color.bar.text
-                    font: Style.font.heading
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+            PanelHero {
+                iconText: "󰆞"
+                title: "Workspace Restorer"
             }
 
             Rectangle {
                 width: parent.width
                 height: 1
-                color: Color.alpha(Color.bar.text, 0.2)
+                color: Color.alpha(Color.bar.text, 0.15)
             }
 
             Rectangle {
                 width: parent.width
                 height: 36
                 radius: Style.cornerRadius
-                color: Color.alpha(Color.bar.text, 0.1)
+                color: root.hoverBg
 
-                Text {
+                Row {
                     anchors.centerIn: parent
-                    text: root.isSnapshotting ? "  Capturing..." : "  Take Snapshot"
-                    color: Color.bar.text
-                    font: Style.font.body
+                    spacing: 6
+
+                    Text {
+                        text: root.isSnapshotting ? "󰅧" : "󰅧"
+                        color: Color.bar.text
+                        font.pixelSize: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    Text {
+                        text: root.isSnapshotting ? "Capturing..." : "Take Snapshot"
+                        color: Color.bar.text
+                        font: Style.font.body
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
                 }
 
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onContainsMouseChanged: parent.color = containsMouse ? root.selectedBg : root.hoverBg
                     onClicked: root.doSnapshot()
                 }
             }
 
-            Text {
-                text: "Profiles"
-                color: Color.alpha(Color.bar.text, 0.6)
-                font: Style.font.italic
-            }
+            PanelSectionHeader { text: "Profiles" }
 
             Column {
                 width: parent.width
@@ -135,33 +184,45 @@ Panel {
 
                         Row {
                             anchors.fill: parent
-                            anchors.margins: 4
-                            spacing: 4
+                            anchors.margins: 6
+                            spacing: 6
 
                             Text {
-                                text: "󰋋  " + modelData
+                                text: "󰋋"
+                                color: Color.alpha(Color.bar.text, 0.5)
+                                font.pixelSize: 13
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            Text {
+                                text: modelData
                                 color: Color.bar.text
                                 font: Style.font.body
                                 anchors.verticalCenter: parent.verticalCenter
                                 Layout.fillWidth: true
-                                width: parent.width - 40
+                                width: parent.width - 70
+                                elide: Text.ElideRight
 
                                 MouseArea {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
+                                    hoverEnabled: true
+                                    onContainsMouseChanged: parent.parent.parent.color = containsMouse ? root.hoverBg : Color.alpha(Color.bar.text, 0.05)
                                     onClicked: root.doRestore(modelData)
                                 }
                             }
 
                             Text {
                                 text: "󰆴"
-                                color: Color.alpha(Color.bar.text, 0.5)
-                                font.pixelSize: 14
+                                color: Color.alpha(Color.bar.text, 0.4)
+                                font.pixelSize: 13
                                 anchors.verticalCenter: parent.verticalCenter
 
                                 MouseArea {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
+                                    hoverEnabled: true
+                                    onContainsMouseChanged: parent.parent.color = containsMouse ? Color.alpha("#ff6666", 0.3) : "transparent"
                                     onClicked: root.doDelete(modelData)
                                 }
                             }
@@ -174,7 +235,7 @@ Panel {
 
             Text {
                 text: root.lastAction
-                color: Color.alpha(Color.bar.text, 0.5)
+                color: Color.alpha(Color.bar.text, 0.4)
                 font: Style.font.italic
                 visible: root.lastAction !== ""
                 width: parent.width
@@ -186,43 +247,34 @@ Panel {
 
         Column {
             anchors.fill: parent
-            anchors.margins: 10
-            spacing: 8
+            anchors.margins: 12
+            spacing: 10
             visible: root.showingNameInput
 
-            Row {
-                width: parent.width
-                spacing: 8
-
-                Text {
-                    text: "󰆞"
-                    color: Color.bar.text
-                    font.pixelSize: 16
-                }
-
-                Text {
-                    text: "Save Snapshot"
-                    color: Color.bar.text
-                    font: Style.font.heading
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+            PanelHero {
+                iconText: "󰆞"
+                title: "Save Snapshot"
             }
 
             Rectangle {
                 width: parent.width
                 height: 1
-                color: Color.alpha(Color.bar.text, 0.2)
+                color: Color.alpha(Color.bar.text, 0.15)
             }
 
             TextField {
                 id: saveNameField
                 width: parent.width
+                height: 36
                 placeholderText: "Profile name"
                 color: Color.bar.text
                 font: Style.font.body
+                leftPadding: 10
                 background: Rectangle {
-                    color: Color.alpha(Color.bar.text, 0.1)
+                    color: Color.alpha(Color.bar.text, 0.08)
                     radius: Style.cornerRadius
+                    border.color: Color.alpha(Color.bar.text, 0.15)
+                    border.width: 1
                 }
                 Keys.onReturnPressed: confirmSave()
                 Keys.onEnterPressed: confirmSave()
@@ -232,7 +284,7 @@ Panel {
                 width: parent.width
                 height: 36
                 radius: Style.cornerRadius
-                color: Color.alpha(Color.bar.text, 0.1)
+                color: root.hoverBg
 
                 Text {
                     anchors.centerIn: parent
@@ -244,6 +296,8 @@ Panel {
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onContainsMouseChanged: parent.parent.color = containsMouse ? root.selectedBg : root.hoverBg
                     onClicked: confirmSave()
                 }
             }
@@ -257,13 +311,15 @@ Panel {
                 Text {
                     anchors.centerIn: parent
                     text: "Cancel"
-                    color: Color.alpha(Color.bar.text, 0.6)
+                    color: Color.alpha(Color.bar.text, 0.5)
                     font: Style.font.body
                 }
 
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onContainsMouseChanged: parent.parent.color = containsMouse ? Color.alpha(Color.bar.text, 0.1) : Color.alpha(Color.bar.text, 0.05)
                     onClicked: {
                         root.showingNameInput = false
                         root.pendingSnapshot = null
@@ -328,16 +384,32 @@ Panel {
             onStreamFinished: {
                 var monitors = JSON.parse(text)
                 var clients = snapMonitorsProc._clients
+
+                var monMap = {}
+                for (var m = 0; m < monitors.length; m++) {
+                    monMap[monitors[m].id] = monitors[m].name
+                }
+
                 var windows = []
                 for (var i = 0; i < clients.length; i++) {
                     var c = clients[i]
+                    var monName = monMap[c.monitor] || String(c.monitor)
+                    var exePath = ""
+                    try {
+                        var f = new File("/proc/" + c.pid + "/exe")
+                        exePath = f.toString()
+                    } catch(e) {}
+
                     windows.push({
                         "class": c.class,
                         "title": c.title,
                         "pid": c.pid,
                         "address": c.address,
                         "workspace": c.workspace.id,
-                        "monitor": c.monitor,
+                        "monitor": monName,
+                        "monitorId": c.monitor,
+                        "exe": exePath,
+                        "command": root.resolveExe(c.class),
                         "position": [c.at[0], c.at[1]],
                         "size": [c.size[0], c.size[1]],
                         "splitRatio": c.splitratio,
@@ -432,6 +504,7 @@ Panel {
                     var win = profile.windows[j]
                     var key = win.class + "::" + win.title
                     if (existingAddrs[key] !== undefined) {
+                        win._existingAddress = existingAddrs[key]
                         alreadyRunning.push(win)
                     } else {
                         toSpawn.push(win)
@@ -441,7 +514,7 @@ Panel {
                 for (var k = 0; k < alreadyRunning.length; k++) {
                     var rw = alreadyRunning[k]
                     var moveCmd = "hyprctl dispatch movetoworkspace " + rw.workspace +
-                        ",address:" + rw.address
+                        ",address:" + rw._existingAddress
                     Quickshell.execDetached(["bash", "-lc", moveCmd])
                 }
 
@@ -450,7 +523,7 @@ Panel {
         }
     }
 
-    property int spawnDelay: 300
+    property int spawnDelay: 400
 
     function spawnWindows(windows, profile) {
         if (windows.length === 0) {
@@ -474,18 +547,18 @@ Panel {
     function spawnNext() {
         var data = pendingSpawns
         if (data._index >= data._windows.length) {
-            applyLayoutTimer._profile = data._profile
             applyLayoutTimer._windows = data._windows
             applyLayoutTimer.restart()
             return
         }
 
         var win = data._windows[data._index]
-        var cmd = "hyprctl dispatch exec " +
+        var cmd = win.command || win.class.toLowerCase()
+        var dispatch = "hyprctl dispatch exec " +
             "[workspace " + win.workspace + ":silent] " +
-            "[monitor " + Util.shellQuote(win.monitor) + ":silent] " +
-            win.class.toLowerCase()
-        Quickshell.execDetached(["bash", "-lc", cmd])
+            "[monitor " + win.monitor + ":silent] " +
+            cmd
+        Quickshell.execDetached(["bash", "-lc", dispatch])
         data._index++
         spawnTimer.restart()
     }
@@ -499,17 +572,16 @@ Panel {
 
     Timer {
         id: applyLayoutTimer
-        interval: 1000
-        property var _profile: null
+        interval: 1500
         property var _windows: []
-        onTriggered: root.applyLayout(_windows, _profile)
+        onTriggered: root.applyLayout(_windows)
     }
 
-    function applyLayout(windows, profile) {
+    function applyLayout(windows) {
         var count = 0
         for (var i = 0; i < windows.length; i++) {
             var win = windows[i]
-            if (win.floating) {
+            if (win.floating && win.position) {
                 var posCmd = "hyprctl dispatch movewindowpixel exact " +
                     win.position[0] + " " + win.position[1] + ",class:" + win.class
                 Quickshell.execDetached(["bash", "-lc", posCmd])
@@ -521,9 +593,9 @@ Panel {
                 count++
             }
         }
-        root.lastAction = "Restored " + windows.length + " windows, " + count + " ratios"
+        root.lastAction = "Restored " + windows.length + " windows"
         root.notify("Workspace restored",
-            windows.length + " windows, " + count + " tile ratios applied")
+            windows.length + " windows launched" + (count > 0 ? ", " + count + " ratios applied" : ""))
     }
 
     // --- Delete ---
