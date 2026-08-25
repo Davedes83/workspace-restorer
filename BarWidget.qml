@@ -497,29 +497,30 @@ Panel {
                 var existing = JSON.parse(text)
                 var profile = checkExistingProc._profile
 
-                // Close all existing windows, then spawn after delay
-                var closeCmd = "#!/bin/bash\n"
+                // Close all existing windows
+                console.log("WSRESTORE: closing " + existing.length + " windows")
                 for (var i = 0; i < existing.length; i++) {
-                    closeCmd += "hyprctl dispatch \"hl.dsp.window.close({address = '" + existing[i].address + "'})\"\n"
+                    var addr = existing[i].address
+                    console.log("WSRESTORE: closing " + existing[i].class + " " + addr)
+                    Quickshell.execDetached(["bash", "-lc",
+                        "hyprctl dispatch \"hl.dsp.window.close({address = '" + addr + "'})\""])
                 }
-                closeCmd += "exit 0\n"
-                saveCloseProc.command = ["bash", "-c", closeCmd]
-                saveCloseProc._profile = profile
-                saveCloseProc.running = true
+
+                // Spawn after a short delay to let closes finish
+                pendingSpawns._windows = profile.windows
+                pendingSpawns._index = 0
+                pendingSpawns._total = profile.windows.length
+                pendingSpawns._profile = profile
+                closeThenSpawnTimer.restart()
             }
         }
     }
 
-    Process {
-        id: saveCloseProc
-        property var _profile: null
-        command: []
-        onExited: {
-            pendingSpawns._windows = _profile.windows
-            pendingSpawns._index = 0
-            pendingSpawns._total = _profile.windows.length
-            pendingSpawns._profile = _profile
-            spawnNext()
+    Timer {
+        id: closeThenSpawnTimer
+        interval: 500
+        onTriggered: {
+            spawnWindows(pendingSpawns._windows, pendingSpawns._profile)
         }
     }
 
