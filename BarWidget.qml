@@ -497,30 +497,15 @@ Panel {
                 var existing = JSON.parse(text)
                 var profile = checkExistingProc._profile
 
-                var existingAddrs = {}
+                // Close all existing windows
                 for (var i = 0; i < existing.length; i++) {
-                    var e = existing[i]
-                    existingAddrs[e.class + "::" + e.title] = e.address
+                    var addr = existing[i].address
+                    Quickshell.execDetached(["bash", "-lc",
+                        "hyprctl dispatch closewindow address:" + addr])
                 }
 
-                var toSpawn = []
-                var alreadyRunning = []
-                for (var j = 0; j < profile.windows.length; j++) {
-                    var win = profile.windows[j]
-                    var key = win.class + "::" + win.title
-                    if (existingAddrs[key] !== undefined) {
-                        win._existingAddress = existingAddrs[key]
-                        alreadyRunning.push(win)
-                    } else {
-                        toSpawn.push(win)
-                    }
-                }
-
-                for (var k = 0; k < alreadyRunning.length; k++) {
-                    // window.move doesn't support address targeting; skip move
-                }
-
-                spawnWindows(toSpawn, profile)
+                // Spawn all windows from the new profile
+                spawnWindows(profile.windows, profile)
             }
         }
     }
