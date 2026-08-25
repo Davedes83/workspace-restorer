@@ -69,7 +69,7 @@ Panel {
     function resolveExe(className) {
         var lower = className.toLowerCase()
         var known = {
-            "org.omarchy.opencode": "opencode",
+            "org.omarchy.opencode": "kitty opencode",
             "org.qbittorrent.qbittorrent": "qbittorrent",
             "org.gnome.nautilus": "nautilus",
             "com.github.xournalpp.xournalpp": "xournalpp",
@@ -558,15 +558,13 @@ Panel {
 
         var win = data._windows[data._index]
         var cmd = win.command || win.class.toLowerCase()
-        var uniqueClass = "wsrestorer-" + data._index
 
-        // Set a window rule to route this window to the target workspace
-        var ruleCmd = "hyprctl eval \"hl.window_rule({match = {class = '" + uniqueClass + "'}, workspace = '" + win.workspace + "'})\""
+        // Set a window rule matching the original class → target workspace
+        var ruleCmd = "hyprctl eval \"hl.window_rule({match = {class = '" + win.class + "'}, workspace = '" + win.workspace + "'})\""
         Quickshell.execDetached(["bash", "-lc", ruleCmd])
 
-        // Launch app with the unique class name
-        var launchCmd = "hyprctl eval \"hl.dispatch(hl.dsp.exec_cmd('" + cmd + " --class " + uniqueClass + "'))\""
-        Quickshell.execDetached(["bash", "-lc", launchCmd])
+        // Launch app directly
+        Quickshell.execDetached(["bash", "-lc", cmd])
 
         data._index++
         spawnTimer.restart()
