@@ -506,34 +506,39 @@ Panel {
                     return
                 }
 
-                // Close all existing windows
+                // Build close script and write to /tmp
                 console.log("WSRESTORE: closing " + existing.length + " windows")
-                var batchCmds = []
+                var scriptLines = ["#!/bin/bash"]
                 for (var i = 0; i < existing.length; i++) {
                     var addr = existing[i].address
                     console.log("WSRESTORE: closing " + existing[i].class + " " + addr)
-                    batchCmds.push("hl.dsp.window.close({address = '" + addr + "'})")
+                    scriptLines.push("hyprctl dispatch \"hl.dsp.window.close({address = '" + addr + "'})\"")
                 }
-                var batchStr = batchCmds.join(" ; ")
-                console.log("WSRESTORE: batch=" + batchStr)
-                closeEnvProc._profile = profile
-                closeEnvProc.command = ["hyprctl", "--batch", batchStr]
-                closeEnvProc.running = true
+                var scriptContent = scriptLines.join("\n")
+                writeCloseScript._profile = profile
+                writeCloseScript.command = ["bash", "-lc", "cat > /tmp/wsrestorer-close.sh << 'WSCLOSE'\n" + scriptContent + "\nWSCLOSE"]
+                writeCloseScript.running = true
             }
         }
     }
 
     Process {
-        id: closeEnvProc
+        id: writeCloseScript
         property var _profile: null
         command: []
         onExited: {
-            console.log("WSRESTORE: close exit code=" + exitCode)
-            pendingSpawns._windows = _profile.windows
-            pendingSpawns._index = 0
-            pendingSpawns._total = _profile.windows.length
-            pendingSpawns._profile = _profile
-            spawnNext()
+            execCloseScript._profile = _profile
+            execCloseScript.running = true
+        }
+    }
+
+    Process {
+        id: execCloseScript
+        property var _profile: null
+        command: ["bash", "/tmp/wsrestorer-close.sh"]
+        onExited: {
+            console.log("WSRESTORE: close script exited with code=" + exitCode)
+            spawnWindows(_profile.windows, _profile)
         }
     }
 
