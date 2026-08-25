@@ -497,41 +497,29 @@ Panel {
                 var existing = JSON.parse(text)
                 var profile = checkExistingProc._profile
 
-                // Close all existing windows
-                var addrs = []
+                // Close all existing windows, then spawn after delay
+                var closeCmd = "#!/bin/bash\n"
                 for (var i = 0; i < existing.length; i++) {
-                    addrs.push(existing[i].address)
+                    closeCmd += "hyprctl dispatch \"hl.dsp.window.close({address = '" + existing[i].address + "'})\"\n"
                 }
-                closeProc._addrs = addrs
-                closeProc._profile = profile
-                closeProc._step = 0
-                if (addrs.length > 0) {
-                    closeProc._cmdStr = "hyprctl dispatch \"hl.dsp.window.close({address = '" + addrs[0] + "'})\""
-                    closeProc.command = ["bash", "-lc", closeProc._cmdStr]
-                    closeProc.running = true
-                } else {
-                    spawnWindows(profile.windows, profile)
-                }
+                closeCmd += "exit 0\n"
+                saveCloseProc.command = ["bash", "-c", closeCmd]
+                saveCloseProc._profile = profile
+                saveCloseProc.running = true
             }
         }
     }
 
     Process {
-        id: closeProc
-        property var _addrs: []
+        id: saveCloseProc
         property var _profile: null
-        property int _step: 0
-        property string _cmdStr: ""
         command: []
         onExited: {
-            _step++
-            if (_step < _addrs.length) {
-                _cmdStr = "hyprctl dispatch \"hl.dsp.window.close({address = '" + _addrs[_step] + "'})\""
-                command = ["bash", "-lc", _cmdStr]
-                running = true
-            } else {
-                spawnWindows(_profile.windows, _profile)
-            }
+            pendingSpawns._windows = _profile.windows
+            pendingSpawns._index = 0
+            pendingSpawns._total = _profile.windows.length
+            pendingSpawns._profile = _profile
+            spawnNext()
         }
     }
 
