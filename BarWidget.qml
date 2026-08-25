@@ -374,6 +374,25 @@ Panel {
             waitForEnd: true
             onStreamFinished: {
                 var clients = JSON.parse(text)
+                var pids = clients.map(function(c) { return c.pid })
+                snapCmdlinesProc._clients = clients
+                snapCmdlinesProc.command = ["bash", "-lc", "for p in " + pids.join(" ") + "; do cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' '; echo; done"]
+                snapCmdlinesProc.running = true
+            }
+        }
+    }
+
+    Process {
+        id: snapCmdlinesProc
+        property var _clients: null
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                var lines = text.trim().split("\n")
+                var clients = snapCmdlinesProc._clients
+                for (var i = 0; i < clients.length; i++) {
+                    clients[i]._cmdline = (lines[i] || "").trim()
+                }
                 snapMonitorsProc._clients = clients
                 snapMonitorsProc.running = true
             }
@@ -399,16 +418,6 @@ Panel {
                 for (var i = 0; i < clients.length; i++) {
                     var c = clients[i]
                     var monName = monMap[c.monitor] || String(c.monitor)
-                    var exePath = ""
-                    var cmdline = ""
-                    try {
-                        var f = new File("/proc/" + c.pid + "/exe")
-                        exePath = f.toString()
-                    } catch(e) {}
-                    try {
-                        var cf = new File("/proc/" + c.pid + "/cmdline")
-                        cmdline = cf.read().replace(/\0/g, " ").trim()
-                    } catch(e) {}
 
                     windows.push({
                         "class": c.class,
@@ -418,8 +427,7 @@ Panel {
                         "workspace": c.workspace.id,
                         "monitor": monName,
                         "monitorId": c.monitor,
-                        "exe": exePath,
-                        "command": cmdline || root.resolveExe(c.class),
+                        "command": c._cmdline || root.resolveExe(c.class),
                         "position": [c.at[0], c.at[1]],
                         "size": [c.size[0], c.size[1]],
                         "splitRatio": c.splitratio,
