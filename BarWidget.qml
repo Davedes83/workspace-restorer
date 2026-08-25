@@ -589,8 +589,11 @@ Panel {
         var ruleCmd = "hyprctl eval \"hl.window_rule({match = {class = '" + win.class + "'}, workspace = '" + win.workspace + "'})\""
         Quickshell.execDetached(["bash", "-lc", ruleCmd])
 
-        // Launch app directly
-        Quickshell.execDetached(["bash", "-lc", cmd])
+        // Write command to temp script to preserve quoting (e.g. inner bash -c)
+        var scriptPath = "/tmp/wsrestorer-spawn-" + data._index + ".sh"
+        Quickshell.execDetached(["bash", "-lc",
+            "echo '#!/bin/bash' > " + scriptPath + " && echo " + Util.shellQuote(cmd) + " >> " + scriptPath + " && chmod +x " + scriptPath])
+        Quickshell.execDetached(["bash", scriptPath])
 
         data._index++
         spawnTimer.restart()
