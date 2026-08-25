@@ -514,23 +514,25 @@ Panel {
                     console.log("WSRESTORE: closing " + existing[i].class + " " + addr)
                     batchCmds.push("dispatch hl.dsp.window.close({address = '" + addr + "'})")
                 }
-                closeExistingProc._profile = profile
-                closeExistingProc.command = ["hyprctl", "--batch", batchCmds.join(" ; ")]
-                closeExistingProc.running = true
+                var batchStr = batchCmds.join(" ; ")
+                console.log("WSRESTORE: batch=" + batchStr)
+                Quickshell.execDetached(["hyprctl", "--batch", batchStr])
+
+                // Spawn after delay
+                pendingSpawns._windows = profile.windows
+                pendingSpawns._index = 0
+                pendingSpawns._total = profile.windows.length
+                pendingSpawns._profile = profile
+                closeThenSpawnTimer.restart()
             }
         }
     }
 
-    Process {
-        id: closeExistingProc
-        property var _profile: null
-        command: []
-        onExited: {
-            pendingSpawns._windows = _profile.windows
-            pendingSpawns._index = 0
-            pendingSpawns._total = _profile.windows.length
-            pendingSpawns._profile = _profile
-            spawnNext()
+    Timer {
+        id: closeThenSpawnTimer
+        interval: 800
+        onTriggered: {
+            spawnWindows(pendingSpawns._windows, pendingSpawns._profile)
         }
     }
 
