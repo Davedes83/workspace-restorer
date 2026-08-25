@@ -180,7 +180,7 @@ Panel {
                         width: parent.width
                         height: 36
                         radius: Style.cornerRadius
-                        color: Qt.darker(Color.bar.text, 1.05)
+                        color: Qt.darker(Color.bar.background, 1.05)
 
                         Row {
                             anchors.fill: parent
@@ -189,7 +189,7 @@ Panel {
 
                             Text {
                                 text: "󰋋"
-                                color: Qt.darker(Color.bar.text, 1.5)
+                                color: Qt.darker(Color.bar.text, 1.4)
                                 font.pixelSize: 13
                                 anchors.verticalCenter: parent.verticalCenter
                             }
@@ -198,7 +198,7 @@ Panel {
                                 text: modelData
                                 color: Color.bar.text
                                 font.family: Style.font.family
-                        font.pixelSize: Style.font.body
+                                font.pixelSize: Style.font.body
                                 anchors.verticalCenter: parent.verticalCenter
                                 Layout.fillWidth: true
                                 width: parent.width - 70
@@ -208,7 +208,7 @@ Panel {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
                                     hoverEnabled: true
-                                    onContainsMouseChanged: parent.parent.parent.color = containsMouse ? root.hoverBg : Qt.darker(Color.bar.text, 1.05)
+                                    onContainsMouseChanged: parent.parent.parent.color = containsMouse ? root.hoverBg : Qt.darker(Color.bar.background, 1.05)
                                     onClicked: root.doRestore(modelData)
                                 }
                             }
@@ -274,7 +274,7 @@ Panel {
                         font.pixelSize: Style.font.body
                 leftPadding: 10
                 background: Rectangle {
-                    color: Qt.darker(Color.bar.text, 1.08)
+                    color: Qt.darker(Color.bar.background, 1.08)
                     radius: Style.cornerRadius
                     border.color: Qt.darker(Color.bar.text, 1.15)
                     border.width: 1
@@ -310,7 +310,7 @@ Panel {
                 width: parent.width
                 height: 36
                 radius: Style.cornerRadius
-                color: Qt.darker(Color.bar.text, 1.05)
+                color: Qt.darker(Color.bar.background, 1.05)
 
                 Text {
                     anchors.centerIn: parent
@@ -324,7 +324,7 @@ Panel {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     hoverEnabled: true
-                    onContainsMouseChanged: parent.parent.color = containsMouse ? Qt.darker(Color.bar.text, 1.1) : Qt.darker(Color.bar.text, 1.05)
+                    onContainsMouseChanged: parent.parent.color = containsMouse ? Qt.darker(Color.bar.text, 1.1) : Qt.darker(Color.bar.background, 1.05)
                     onClicked: {
                         root.showingNameInput = false
                         root.pendingSnapshot = null
