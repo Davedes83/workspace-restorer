@@ -544,13 +544,6 @@ Panel {
         id: spawnTimer
         interval: root.spawnDelay
         onTriggered: {
-            // Move the just-launched (focused) window to target workspace
-            var move = pendingSpawns._pendingMove
-            if (move && move.workspace) {
-                var moveCmd = "hyprctl dispatch 'hl.dsp.window.move({workspace = \"" + move.workspace + "\"})'"
-                Quickshell.execDetached(["bash", "-lc", moveCmd])
-                pendingSpawns._pendingMove = null
-            }
             spawnNext()
         }
     }
@@ -565,12 +558,16 @@ Panel {
 
         var win = data._windows[data._index]
         var cmd = win.command || win.class.toLowerCase()
+        var uniqueClass = "wsrestorer-" + data._index
 
-        // Launch app directly (hyprctl dispatch exec no longer works in 0.56+)
-        Quickshell.execDetached(["bash", "-lc", cmd])
+        // Set a window rule to route this window to the target workspace
+        var ruleCmd = "hyprctl eval \"hl.window_rule({match = {class = '" + uniqueClass + "'}, workspace = '" + win.workspace + "'})\""
+        Quickshell.execDetached(["bash", "-lc", ruleCmd])
 
-        // Store target workspace/monitor for post-launch move
-        data._pendingMove = { workspace: win.workspace, monitor: win.monitor }
+        // Launch app with the unique class name
+        var launchCmd = "hyprctl eval \"hl.dispatch(hl.dsp.exec_cmd('" + cmd + " --class " + uniqueClass + "'))\""
+        Quickshell.execDetached(["bash", "-lc", launchCmd])
+
         data._index++
         spawnTimer.restart()
     }
@@ -579,8 +576,7 @@ Panel {
         _windows: [],
         _index: 0,
         _total: 0,
-        _profile: null,
-        _pendingMove: null
+        _profile: null
     })
 
     Timer {
