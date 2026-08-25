@@ -499,28 +499,44 @@ Panel {
 
                 // Close all existing windows
                 console.log("WSRESTORE: closing " + existing.length + " windows")
+                var scriptLines = ["#!/bin/bash"]
                 for (var i = 0; i < existing.length; i++) {
                     var addr = existing[i].address
                     console.log("WSRESTORE: closing " + existing[i].class + " " + addr)
-                    Quickshell.execDetached(["bash", "-lc",
-                        "hyprctl dispatch \"hl.dsp.window.close({address = '" + addr + "'})\""])
+                    scriptLines.push("hyprctl dispatch \"hl.dsp.window.close({address = '" + addr + "'})\"")
                 }
-
-                // Spawn after a short delay to let closes finish
-                pendingSpawns._windows = profile.windows
-                pendingSpawns._index = 0
-                pendingSpawns._total = profile.windows.length
-                pendingSpawns._profile = profile
-                closeThenSpawnTimer.restart()
+                writeScriptProc._script = scriptLines.join("\n")
+                writeScriptProc._profile = profile
+                writeScriptProc.command = ["bash", "-lc",
+                    "cat > /tmp/wsrestorer-close.sh << 'WSCLOSE'\n" + scriptLines.join("\n") + "\nWSCLOSE"]
+                writeScriptProc.running = true
             }
         }
     }
 
-    Timer {
-        id: closeThenSpawnTimer
-        interval: 500
-        onTriggered: {
-            spawnWindows(pendingSpawns._windows, pendingSpawns._profile)
+    Process {
+        id: writeScriptProc
+        property string _script: ""
+        property var _profile: null
+        command: []
+        onExited: {
+            Quickshell.execDetached(["chmod", "+x", "/tmp/wsrestorer-close.sh"])
+            execCloseProc._profile = _profile
+            execCloseProc.command = ["bash", "/tmp/wsrestorer-close.sh"]
+            execCloseProc.running = true
+        }
+    }
+
+    Process {
+        id: execCloseProc
+        property var _profile: null
+        command: []
+        onExited: {
+            pendingSpawns._windows = _profile.windows
+            pendingSpawns._index = 0
+            pendingSpawns._total = _profile.windows.length
+            pendingSpawns._profile = _profile
+            spawnNext()
         }
     }
 
