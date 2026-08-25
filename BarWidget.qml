@@ -400,9 +400,14 @@ Panel {
                     var c = clients[i]
                     var monName = monMap[c.monitor] || String(c.monitor)
                     var exePath = ""
+                    var cmdline = ""
                     try {
                         var f = new File("/proc/" + c.pid + "/exe")
                         exePath = f.toString()
+                    } catch(e) {}
+                    try {
+                        var cf = new File("/proc/" + c.pid + "/cmdline")
+                        cmdline = cf.read().replace(/\0/g, " ").trim()
                     } catch(e) {}
 
                     windows.push({
@@ -414,7 +419,7 @@ Panel {
                         "monitor": monName,
                         "monitorId": c.monitor,
                         "exe": exePath,
-                        "command": root.resolveExe(c.class),
+                        "command": cmdline || root.resolveExe(c.class),
                         "position": [c.at[0], c.at[1]],
                         "size": [c.size[0], c.size[1]],
                         "splitRatio": c.splitratio,
