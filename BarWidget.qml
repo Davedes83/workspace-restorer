@@ -600,15 +600,15 @@ Panel {
                 for (var m = 0; m < toMove.length; m++) {
                     var mv = toMove[m]
                     lines.push("echo \"[move-existing] ws=" + mv.ws + " addr=" + mv.addr + "\" >> \"$LOGFILE\"")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', address='" + mv.addr + "', follow=false})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', window='address:" + mv.addr + "', follow=false})\" 2>/dev/null || true")
                 }
 
                 // Phase 2b: Apply floating state and positioning
                 for (var f = 0; f < toFloat.length; f++) {
                     var fl = toFloat[f]
-                    lines.push("hyprctl dispatch \"hl.dsp.window.float({action='toggle', address='" + fl.addr + "'})\" 2>/dev/null || true")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fl.pos[0] + ", y=" + fl.pos[1] + ", relative=false, address='" + fl.addr + "'})\" 2>/dev/null || true")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fl.size[0] + ", y=" + fl.size[1] + ", address='" + fl.addr + "'})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:" + fl.addr + "'})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fl.pos[0] + ", y=" + fl.pos[1] + ", relative=false, window='address:" + fl.addr + "'})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fl.size[0] + ", y=" + fl.size[1] + ", window='address:" + fl.addr + "'})\" 2>/dev/null || true")
                 }
 
                 // Phase 3: Spawn missing windows
@@ -650,7 +650,7 @@ Panel {
                         var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\\\.desktop$"; "")) == "' + t.cls + '") | .address'
                         lines.push("ADDRS=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>/dev/null)")
                         lines.push("echo \"[move-spawn] cls=" + t.cls + " ws=" + t.ws + " addrs=$ADDRS\" >> \"$LOGFILE\"")
-                        lines.push("for A in $ADDRS; do if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]]; then hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', address='$A', follow=false})\" 2>/dev/null || true; MOVED_ADDRS=\"$MOVED_ADDRS $A\"; break; fi; done")
+                         lines.push("for A in $ADDRS; do if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]]; then hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>/dev/null || true; MOVED_ADDRS=\"$MOVED_ADDRS $A\"; break; fi; done")
                     }
                 }
 
