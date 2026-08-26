@@ -528,50 +528,88 @@ Panel {
                 }
                 var profile = checkExistingProc._profile
 
-                // Build one master script that kills everything then spawns everything
+                // Smart matching: only kill what doesn't belong, move what does
                 var lines = ["#!/bin/bash"]
 
-                // Phase 1: Kill all existing windows
+                // Track which profile windows have been matched
+                var matched = []
+                for (var p = 0; p < profile.windows.length; p++) matched[p] = false
+
+                var toKill = []
+                var toMove = []
+
                 if (existing && existing.length > 0) {
                     for (var i = 0; i < existing.length; i++) {
-                        lines.push("kill -9 " + existing[i].pid + " 2>/dev/null || true")
+                        var e = existing[i]
+                        var bestIdx = -1
+
+                        // Match by class, then title for duplicates
+                        for (var p = 0; p < profile.windows.length; p++) {
+                            if (matched[p]) continue
+                            if (e.class === profile.windows[p].class) {
+                                if (bestIdx === -1 || e.title === profile.windows[p].title) {
+                                    bestIdx = p
+                                    if (e.title === profile.windows[p].title) break
+                                }
+                            }
+                        }
+
+                        if (bestIdx >= 0) {
+                            matched[bestIdx] = true
+                            var targetWs = profile.windows[bestIdx].workspace
+                            if (e.workspace.id !== targetWs) {
+                                toMove.push({addr: e.address, ws: targetWs, cls: e.class})
+                            }
+                        } else {
+                            toKill.push(e)
+                        }
                     }
                 }
-                // Safety net kills
-                lines.push("pkill -9 -f 'vivaldi-bin' 2>/dev/null || true")
-                lines.push("pkill -9 -f 'qbittorrent' 2>/dev/null || true")
-                lines.push("pkill -9 -f 'nautilus' 2>/dev/null || true")
-                lines.push("pkill -9 -f 'celluloid' 2>/dev/null || true")
-                lines.push("pkill -9 -f 'imv' 2>/dev/null || true")
-                lines.push("pkill -9 -f 'dua' 2>/dev/null || true")
-                // Clear browser session files
+
+                // Phase 1: Kill unmatched windows
+                for (var k = 0; k < toKill.length; k++) {
+                    lines.push("kill -9 " + toKill[k].pid + " 2>/dev/null || true")
+                }
+
+                // Phase 2: Move matched windows to correct workspaces
+                for (var m = 0; m < toMove.length; m++) {
+                    var mv = toMove[m]
+                    lines.push("hyprctl dispatch movetoworkspacesilent " + mv.ws + ",address:" + mv.addr + " 2>/dev/null || true")
+                }
+
+                // Clear browser session caches
                 lines.push("rm -f ~/.config/vivaldi/Default/'Last Session' ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
                 lines.push("rm -rf ~/.config/firefox/*/sessionstore-backups/* 2>/dev/null || true")
                 lines.push("rm -f ~/.config/google-chrome/Default/'Current Session' ~/.config/google-chrome/Default/'Current Tabs' 2>/dev/null || true")
                 lines.push("rm -f ~/.config/chromium/Default/'Current Session' ~/.config/chromium/Default/'Current Tabs' 2>/dev/null || true")
-                lines.push("sleep 1")
 
-                // Phase 2: Focus workspace, wait, launch app — for each window
+                // Phase 3: Spawn missing windows
+                var spawnCount = 0
                 for (var j = 0; j < profile.windows.length; j++) {
-                    var w = profile.windows[j]
-                    var cmd = w.command || w.class.toLowerCase()
-                    // Focus target workspace
-                    lines.push("hyprctl dispatch 'workspace " + w.workspace + "' 2>/dev/null || true")
-                    lines.push("hyprctl eval \"hl.dsp.workspace({id = " + w.workspace + "})\" 2>/dev/null || true")
-                    lines.push("sleep 0.3")
-                    // Write and execute spawn script (preserves quoting)
-                    var escaped = cmd.replace(/'/g, "'\\''")
-                    lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
-                    lines.push("printf '#!/bin/bash\\n%s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH &")
-                    lines.push("sleep 0.4")
+                    if (!matched[j]) {
+                        var w = profile.windows[j]
+                        var cmd = w.command || w.class.toLowerCase()
+                        // Focus target workspace, wait, then launch
+                        lines.push("hyprctl eval \"hl.dsp.workspace({id = " + w.workspace + "})\" 2>/dev/null || true")
+                        lines.push("sleep 0.3")
+                        var escaped = cmd.replace(/'/g, "'\\''")
+                        lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
+                        lines.push("printf '#!/bin/bash\\n%s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH &")
+                        lines.push("sleep 0.4")
+                        spawnCount++
+                    }
                 }
 
                 lines.push("sleep 1")
-                lines.push("rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-kill.sh 2>/dev/null")
+                lines.push("rm -f /tmp/wsrestorer-spawn-*.sh 2>/dev/null")
+
+                var movedCount = toMove.length
+                var killedCount = toKill.length
+                var totalCount = movedCount + spawnCount
 
                 var scriptContent = lines.join("\n")
                 var scriptPath = "/tmp/wsrestorer-restore.sh"
-                masterRestoreProc._count = profile.windows.length
+                masterRestoreProc._count = totalCount
                 masterRestoreProc.command = ["bash", "-c",
                     "printf '%s\\n' " + Util.shellQuote(scriptContent) + " > " + scriptPath + " && chmod +x " + scriptPath + " && bash " + scriptPath]
                 masterRestoreProc.running = true
