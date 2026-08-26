@@ -603,8 +603,9 @@ Panel {
                     lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fl.size[0] + ", y=" + fl.size[1] + ", address='" + fl.addr + "'})\" 2>/dev/null || true")
                 }
 
-                // Phase 3: Spawn missing windows (only those not matched)
+                // Phase 3: Spawn missing windows
                 var spawnCount = 0
+                var spawnTargets = []
                 for (var j = 0; j < profile.windows.length; j++) {
                     if (!matched[j]) {
                         var w = profile.windows[j]
@@ -618,18 +619,27 @@ Panel {
                             else if (cls === "alacritty") cmd = "alacritty --working-directory " + w.cwd
                         }
 
-                        // Focus target workspace, wait, then launch (blocking, no &)
-                        lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + w.workspace + "'})\" 2>/dev/null || true")
-                        lines.push("sleep 0.2")
                         var escaped = cmd.replace(/'/g, "'\\''")
                         lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
-                        lines.push("printf '#!/bin/bash\\n%s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH")
+                        lines.push("printf '#!/bin/bash\\nexec %s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH &")
+                        spawnTargets.push({cls: w.class.toLowerCase().replace(/\.desktop$/, ""), ws: w.workspace})
                         spawnCount++
                     }
                 }
 
-                lines.push("sleep 1")
-                lines.push("rm -f /tmp/wsrestorer-spawn-*.sh 2>/dev/null")
+                // Phase 3b: Wait for windows to register, then move via jq
+                if (spawnCount > 0) {
+                    lines.push("sleep 1.5")
+                    for (var s = 0; s < spawnTargets.length; s++) {
+                        var t = spawnTargets[s]
+                        var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\.desktop$"; "")) == "' + t.cls + '") | .address'
+                        lines.push("ADDR=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>/dev/null | head -1)")
+                        lines.push("if [ -n \"$ADDR\" ]; then hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', address='\" + $ADDR + \"', follow=false})\" 2>/dev/null; fi")
+                    }
+                }
+
+                lines.push("sleep 0.5")
+                lines.push("rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-move.py 2>/dev/null")
 
                 var totalCount = toMove.length + toFloat.length + spawnCount
 
