@@ -32,7 +32,7 @@ Panel {
     implicitHeight: button.implicitHeight
 
     Component.onCompleted: {
-        Quickshell.execDetached(["bash", "-lc", "mkdir -p ~/.cache && > " + logFile])
+        Quickshell.execDetached(["bash", "-lc", "touch " + logFile])
         refreshProfiles()
         buildMonitorMap()
     }
@@ -40,8 +40,10 @@ Panel {
     property string logFile: Quickshell.env("HOME") + "/.cache/wsrestorer.log"
 
     function wslog(msg) {
-        var line = new Date().toISOString().substring(11, 23) + " " + msg + "\n"
-        Quickshell.execDetached(["bash", "-lc", "echo " + Util.shellQuote(line) + " >> " + logFile])
+        var ts = new Date().toISOString().substring(11, 23)
+        var line = ts + " " + msg
+        var escaped = line.replace(/'/g, "'\\''")
+        Quickshell.execDetached(["bash", "-c", "echo '" + escaped + "' >> " + root.logFile])
     }
 
     function notify(summary, body) {
