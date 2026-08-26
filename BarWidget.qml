@@ -32,18 +32,8 @@ Panel {
     implicitHeight: button.implicitHeight
 
     Component.onCompleted: {
-        Quickshell.execDetached(["bash", "-lc", "touch " + logFile])
         refreshProfiles()
         buildMonitorMap()
-    }
-
-    property string logFile: Quickshell.env("HOME") + "/.cache/wsrestorer.log"
-
-    function wslog(msg) {
-        var ts = new Date().toISOString().substring(11, 23)
-        var line = ts + " " + msg
-        var escaped = line.replace(/'/g, "'\\''")
-        Quickshell.execDetached(["bash", "-c", "echo '" + escaped + "' >> " + root.logFile])
     }
 
     function notify(summary, body) {
@@ -74,9 +64,7 @@ Panel {
                         map[monitors[i].id] = monitors[i].name
                     }
                     root.monitorMap = map
-                } catch(e) {
-                    wslog("WSRESTORE: failed to parse monitors JSON: " + e)
-                }
+                } catch(e) {}
             }
         }
     }
@@ -381,7 +369,6 @@ Panel {
                     snapCmdlinesProc.command = ["bash", "-lc", "for p in " + pids.join(" ") + "; do cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' '; echo; done"]
                     snapCmdlinesProc.running = true
                 } catch(e) {
-                    wslog("WSRESTORE: failed to parse clients JSON: " + e)
                     root.isSnapshotting = false
                     root.lastAction = "Failed to capture windows"
                 }
@@ -459,7 +446,6 @@ Panel {
                     saveNameField.text = generateDefaultName()
                     root.showingNameInput = true
                 } catch(e) {
-                    wslog("WSRESTORE: failed to parse monitors JSON: " + e)
                     root.isSnapshotting = false
                     root.lastAction = "Failed to capture monitors"
                 }
@@ -515,7 +501,6 @@ Panel {
                     var profile = JSON.parse(text)
                     restoreWithConflicts(profile)
                 } catch(e) {
-                    wslog("WSRESTORE: failed to parse profile JSON: " + e)
                     root.isRestoring = false
                     root.lastAction = "Failed to load profile"
                 }
@@ -543,13 +528,11 @@ Panel {
                 try {
                     var existing = JSON.parse(text)
                 } catch(e) {
-                    wslog("WSRESTORE: failed to parse clients JSON: " + e)
                     existing = []
                 }
                 var profile = checkExistingProc._profile
 
                 if (!existing || existing.length === 0) {
-                    wslog("WSRESTORE: no existing windows, spawning directly")
                     root._restoreProfile = profile
                     root._spawnWindows = profile.windows
                     root._spawnIndex = 0
@@ -557,36 +540,25 @@ Panel {
                     return
                 }
 
-                wslog("WSRESTORE: found " + existing.length + " existing windows to kill")
-                for (var i = 0; i < existing.length; i++) {
-                    wslog("WSRESTORE-EXISTING[" + i + "]: pid=" + existing[i].pid + " class=" + existing[i].class)
-                }
-
-                // Close all existing windows by PID — kill entire process groups
-                var killLines = ["#!/bin/bash", "echo 'WSRESTORE-KILL: starting'"]
+                // Close ALL existing windows — kill by PID and by known app names
+                var killLines = ["#!/bin/bash"]
                 for (var i = 0; i < existing.length; i++) {
                     var win = existing[i]
-                    killLines.push("echo 'WSRESTORE-KILL: killing pid=" + win.pid + " class=" + win.class + "'")
-                    // Kill process group (negative PID) to catch child processes
-                    killLines.push("kill -9 -" + win.pid + " 2>/dev/null || kill -9 " + win.pid + " 2>/dev/null")
+                    killLines.push("kill -9 " + win.pid + " 2>/dev/null")
                 }
-                // Also kill any orphaned browser background processes by name
+                // Safety net: kill common apps by name
                 killLines.push("pkill -9 -f 'vivaldi-bin' 2>/dev/null || true")
-                killLines.push("pkill -9 -f 'chrome' 2>/dev/null || true")
-                killLines.push("pkill -9 -f 'firefox' 2>/dev/null || true")
+                killLines.push("pkill -9 -f 'qbittorrent' 2>/dev/null || true")
+                killLines.push("pkill -9 -f 'nautilus' 2>/dev/null || true")
+                killLines.push("pkill -9 -f 'celluloid' 2>/dev/null || true")
+                killLines.push("pkill -9 -f 'imv' 2>/dev/null || true")
+                killLines.push("pkill -9 -f 'dua' 2>/dev/null || true")
                 // Clear browser session files to prevent old tabs from resurrecting
                 killLines.push("rm -f ~/.config/vivaldi/Default/'Last Session' 2>/dev/null || true")
                 killLines.push("rm -f ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
-                killLines.push("sleep 1")
-                killLines.push("echo 'WSRESTORE-KILL: checking survivors'")
-                killLines.push("pgrep -a vivaldi-bin || echo 'WSRESTORE-KILL: no vivaldi survivors'")
-                killLines.push("pgrep -a -f kitty || echo 'WSRESTORE-KILL: no kitty survivors'")
-                killLines.push("pgrep -a qbittorrent || echo 'WSRESTORE-KILL: no qbittorrent survivors'")
-                killLines.push("pgrep -a nautilus || echo 'WSRESTORE-KILL: no nautilus survivors'")
-                killLines.push("echo 'WSRESTORE-KILL: done'")
+                killLines.push("sleep 0.5")
                 var scriptContent = killLines.join("\n")
                 var scriptPath = "/tmp/wsrestorer-kill.sh"
-                // Write script and execute in one command
                 killProc._profile = profile
                 killProc.command = ["bash", "-c",
                     "printf '%s\\n' " + Util.shellQuote(scriptContent) + " > " + scriptPath + " && chmod +x " + scriptPath + " && bash " + scriptPath]
@@ -600,19 +572,7 @@ Panel {
         id: killProc
         property var _profile: null
         command: ["bash", "-c", ""]
-        stdout: StdioCollector {
-            waitForEnd: true
-            onStreamFinished: {
-                root.wslog("WSRESTORE-KILL-OUTPUT: " + text.replace(/\n/g, " | "))
-            }
-        }
         onExited: function(exitCode) {
-            wslog("WSRESTORE: kill script exited with code " + exitCode)
-            wslog("WSRESTORE: spawning " + killProc._profile.windows.length + " windows")
-            for (var i = 0; i < killProc._profile.windows.length; i++) {
-                var w = killProc._profile.windows[i]
-                wslog("WSRESTORE-SPAWN[" + i + "]: class=" + w.class + " ws=" + w.workspace + " cmd=" + w.command)
-            }
             root._restoreProfile = killProc._profile
             root._spawnWindows = killProc._profile.windows
             root._spawnIndex = 0
@@ -622,15 +582,13 @@ Panel {
 
     Timer {
         id: killThenSpawnTimer
-        interval: 2000
+        interval: 1000
         onTriggered: {
-            // Clean up stale temp scripts before spawning
-            Quickshell.execDetached(["bash", "-lc", "rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-kill.sh"])
             spawnNext()
         }
     }
 
-    property int spawnDelay: 400
+    property int spawnDelay: 300
 
     Timer {
         id: spawnTimer
@@ -642,7 +600,6 @@ Panel {
 
     function spawnNext() {
         if (_spawnIndex >= _spawnWindows.length) {
-            wslog("WSRESTORE: all " + _spawnWindows.length + " windows spawned")
             applyLayoutTimer._count = _spawnWindows.length
             applyLayoutTimer.restart()
             return
@@ -650,11 +607,11 @@ Panel {
 
         var win = _spawnWindows[_spawnIndex]
         var cmd = win.command || win.class.toLowerCase()
-        wslog("WSRESTORE: spawn[" + _spawnIndex + "] class=" + win.class + " ws=" + win.workspace + " cmd=" + cmd)
 
-        // Set a window rule matching the original class → target workspace
-        var ruleCmd = "hyprctl eval \"hl.window_rule({match = {class = '" + win.class + "'}, workspace = '" + win.workspace + "'})\""
-        Quickshell.execDetached(["bash", "-lc", ruleCmd])
+        // Focus the target workspace BEFORE launching the app.
+        // New windows open on the focused workspace — no window rules needed.
+        var focusCmd = "hyprctl eval \"hl.dsp.workspace({id = " + win.workspace + "})\""
+        Quickshell.execDetached(["bash", "-lc", focusCmd])
 
         // Write command to temp script to preserve quoting (e.g. inner bash -c)
         var scriptPath = "/tmp/wsrestorer-spawn-" + _spawnIndex + ".sh"
@@ -670,8 +627,7 @@ Panel {
         interval: 1500
         property int _count: 0
         onTriggered: {
-            // Cleanup temp spawn scripts
-            Quickshell.execDetached(["bash", "-lc", "rm -f /tmp/wsrestorer-spawn-*.sh"])
+            Quickshell.execDetached(["bash", "-lc", "rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-kill.sh"])
             root.isRestoring = false
             root.lastAction = "Restored " + _count + " windows"
             root.notify("Workspace restored", _count + " windows launched")
