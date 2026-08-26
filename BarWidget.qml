@@ -47,6 +47,10 @@ Panel {
                "-" + pad(d.getHours()) + pad(d.getMinutes())
     }
 
+    function generateProfileId() {
+        return Math.random().toString(36).substring(2, 11) + Date.now().toString(36)
+    }
+
     function buildMonitorMap() {
         monitorMapProc.running = true
     }
@@ -437,6 +441,7 @@ Panel {
                         })
                     }
                     root.pendingSnapshot = {
+                        "profileId": generateProfileId(),
                         "timestamp": Date.now(),
                         "windows": windows,
                         "monitors": monitors
@@ -528,15 +533,51 @@ Panel {
                 }
                 var profile = checkExistingProc._profile
 
-                // Build one master script that kills everything then spawns everything
+                // Build set of target workspaces
+                var targetWorkspaces = {}
+                for (var j = 0; j < profile.windows.length; j++) {
+                    targetWorkspaces[profile.windows[j].workspace] = true
+                }
+
+                // Build one master script for smart restoration
                 var lines = ["#!/bin/bash"]
 
-                // Phase 1: Kill all existing windows
+                // Phase 1: Match existing windows with profile windows by class
+                // Only kill windows in target workspaces that don't match any profile window
+                var matchedIndices = {}
+                var toKill = []
+
                 if (existing && existing.length > 0) {
                     for (var i = 0; i < existing.length; i++) {
-                        lines.push("kill -9 " + existing[i].pid + " 2>/dev/null || true")
+                        var e = existing[i]
+                        var matched = false
+
+                        // If window is NOT in a target workspace, preserve it
+                        if (!targetWorkspaces[e.workspace.id]) {
+                            continue
+                        }
+
+                        // Try to match by window class
+                        for (var k = 0; k < profile.windows.length; k++) {
+                            if (!matchedIndices[k] && e.class === profile.windows[k].class) {
+                                matchedIndices[k] = e.pid
+                                matched = true
+                                break
+                            }
+                        }
+
+                        // If no match found in target workspace, kill it
+                        if (!matched) {
+                            toKill.push(e.pid)
+                        }
+                    }
+
+                    // Kill unmatched windows in target workspaces
+                    for (var t = 0; t < toKill.length; t++) {
+                        lines.push("kill -9 " + toKill[t] + " 2>/dev/null || true")
                     }
                 }
+
                 // Safety net kills
                 lines.push("pkill -9 -f 'vivaldi-bin' 2>/dev/null || true")
                 lines.push("pkill -9 -f 'qbittorrent' 2>/dev/null || true")
@@ -544,7 +585,8 @@ Panel {
                 lines.push("pkill -9 -f 'celluloid' 2>/dev/null || true")
                 lines.push("pkill -9 -f 'imv' 2>/dev/null || true")
                 lines.push("pkill -9 -f 'dua' 2>/dev/null || true")
-                // Clear browser session files
+
+                // Clear browser session caches to prevent old tabs from restoring
                 lines.push("rm -f ~/.config/vivaldi/Default/'Last Session' ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
                 lines.push("rm -rf ~/.config/firefox/*/sessionstore-backups/* 2>/dev/null || true")
                 lines.push("rm -f ~/.config/google-chrome/Default/'Current Session' ~/.config/google-chrome/Default/'Current Tabs' 2>/dev/null || true")
@@ -567,7 +609,7 @@ Panel {
                 }
 
                 lines.push("sleep 1")
-                lines.push("rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-kill.sh 2>/dev/null")
+                lines.push("rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-restore.sh 2>/dev/null")
 
                 var scriptContent = lines.join("\n")
                 var scriptPath = "/tmp/wsrestorer-restore.sh"

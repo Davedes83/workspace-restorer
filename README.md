@@ -1,3 +1,4 @@
+````markdown
 # Workspace Restorer
 
 An Omarchy shell plugin for Hyprland that snapshots and restores workspace layouts as named profiles.
@@ -6,8 +7,10 @@ An Omarchy shell plugin for Hyprland that snapshots and restores workspace layou
 
 - **Snapshot** — Capture all open windows, their positions, workspaces, and monitor assignments
 - **Restore** — Re-launch windows into their exact workspace and monitor layout
-- **Conflict Detection** — Avoids duplicate spawns; moves already-running windows to the correct workspace
+- **Smart Conflict Detection** — Matches existing windows by class name; only kills windows in target workspaces
+- **Cross-Contamination Prevention** — Isolated restoration prevents windows from other workspaces being affected
 - **Layout Restoration** — Applies tiling ratios and floating positions after spawning
+- **Browser Cache Clearing** — Clears session files from Vivaldi, Firefox, Chrome, and Chromium
 - **Desktop Notifications** — Feedback on snapshot/restore/delete actions
 
 ## Installation
@@ -52,9 +55,20 @@ omarchy restart shell
 
 - Snapshots are saved as JSON files in `~/.config/omarchy/workspace-restorer/`
 - Uses `hyprctl -j clients` and `hyprctl -j monitors` for state capture
+- Intelligently matches existing windows by class name before restoration
+- Only kills windows in the target workspace scope (prevents cross-contamination)
+- Clears browser session files to prevent old tabs/windows from restoring
 - Uses `hyprctl dispatch exec` for window spawning with workspace/monitor rules
 - Windows are spawned with 300ms delays to avoid overwhelming the compositor
 - Layout ratios are applied after a 1-second settling period
+
+## Profile Structure
+
+Each snapshot is stored as a JSON file containing:
+- `profileId` — Unique identifier for the profile
+- `timestamp` — When the snapshot was taken
+- `windows` — Array of window objects with class, command, workspace, position, size, etc.
+- `monitors` — Monitor configuration at snapshot time
 
 ## Requirements
 
@@ -65,3 +79,4 @@ omarchy restart shell
 ## License
 
 MIT
+````
