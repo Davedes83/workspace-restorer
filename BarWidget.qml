@@ -552,6 +552,7 @@ Panel {
                 var toKill = []
                 var toMove = []
                 var toFloat = []
+                var matchedAddrs = []
 
                 if (existing && existing.length > 0) {
                     for (var i = 0; i < existing.length; i++) {
@@ -571,6 +572,7 @@ Panel {
 
                         if (bestIdx >= 0) {
                             matched[bestIdx] = true
+                            matchedAddrs.push(e.address)
                             var target = profile.windows[bestIdx]
                             // Move to correct workspace if needed
                             if (String(e.workspace.name) !== String(target.workspace)) {
@@ -597,11 +599,11 @@ Panel {
                 lines.push("rm -f ~/.config/google-chrome/Default/'Current Session' ~/.config/google-chrome/Default/'Current Tabs' 2>/dev/null || true")
                 lines.push("rm -f ~/.config/chromium/Default/'Current Session' ~/.config/chromium/Default/'Current Tabs' 2>/dev/null || true")
 
-                // Phase 2: Move matched windows to correct workspaces using core Hyprland dispatcher
+                // Phase 2: Move matched windows to correct workspaces
                 for (var m = 0; m < toMove.length; m++) {
                     var mv = toMove[m]
                     lines.push("echo \"[move-existing] ws=" + mv.ws + " addr=" + mv.addr + "\" >> \"$LOGFILE\"")
-                    lines.push("hyprctl dispatch movetoworkspacesilent \"" + mv.ws + ",address:" + mv.addr + "\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', window='address:" + mv.addr + "', follow=false})\" 2>/dev/null || true")
                 }
 
                 // Phase 2b: Apply floating state and positioning
@@ -643,7 +645,9 @@ Panel {
                 // snapshotted workspace by CLASS (fork-stable). Sequential
                 // assignment avoids moving the same window twice when several
                 // profile entries share a class.
+                // Exclude pre-existing matched windows via MATCHED_ADDRS
                 if (spawnCount > 0) {
+                    lines.push("MATCHED_ADDRS=\"" + matchedAddrs.join(" ") + "\"")
                     lines.push("sleep 2")
                     lines.push("MOVED_ADDRS=\"\"")
                     for (var s = 0; s < spawnTargets.length; s++) {
@@ -654,8 +658,8 @@ Panel {
                         lines.push("  ADDRS=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>/dev/null)")
                         lines.push("  echo \"[move-spawn] attempt=$ATTEMPT cls=" + t.cls + " ws=" + t.ws + " addrs=$ADDRS\" >> \"$LOGFILE\"")
                         lines.push("  for A in $ADDRS; do")
-                        lines.push("    if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]]; then")
-                        lines.push("      hyprctl dispatch movetoworkspacesilent \"" + t.ws + ",address:$A\" 2>/dev/null || true")
+                        lines.push("    if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]] && [[ \" $MATCHED_ADDRS \" != *\" $A \"* ]]; then")
+                        lines.push("      hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>/dev/null || true")
                         lines.push("      MOVED_ADDRS=\"$MOVED_ADDRS $A\"")
                         lines.push("      break 2")
                         lines.push("    fi")
