@@ -428,7 +428,8 @@ Panel {
                             "title": c.title,
                             "pid": c.pid,
                             "address": c.address,
-                            "workspace": c.workspace.id,
+                            "workspace": c.workspace.name,
+                            "workspaceId": c.workspace.id,
                             "monitor": monName,
                             "monitorId": c.monitor,
                             "command": isFirstForPid ? (c._cmdline || null) : null,
@@ -572,7 +573,7 @@ Panel {
                             matched[bestIdx] = true
                             var target = profile.windows[bestIdx]
                             // Move to correct workspace if needed
-                            if (String(e.workspace.id) !== String(target.workspace)) {
+                            if (String(e.workspace.name) !== String(target.workspace)) {
                                 toMove.push({addr: e.address, ws: target.workspace, cls: e.class})
                             }
                             // Restore floating state and position
@@ -596,11 +597,11 @@ Panel {
                 lines.push("rm -f ~/.config/google-chrome/Default/'Current Session' ~/.config/google-chrome/Default/'Current Tabs' 2>/dev/null || true")
                 lines.push("rm -f ~/.config/chromium/Default/'Current Session' ~/.config/chromium/Default/'Current Tabs' 2>/dev/null || true")
 
-                // Phase 2: Move matched windows to correct workspaces
+                // Phase 2: Move matched windows to correct workspaces using core Hyprland dispatcher
                 for (var m = 0; m < toMove.length; m++) {
                     var mv = toMove[m]
                     lines.push("echo \"[move-existing] ws=" + mv.ws + " addr=" + mv.addr + "\" >> \"$LOGFILE\"")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', window='address:" + mv.addr + "', follow=false})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch movetoworkspacesilent \"" + mv.ws + ",address:" + mv.addr + "\" 2>/dev/null || true")
                 }
 
                 // Phase 2b: Apply floating state and positioning
@@ -643,14 +644,25 @@ Panel {
                 // assignment avoids moving the same window twice when several
                 // profile entries share a class.
                 if (spawnCount > 0) {
-                    lines.push("sleep 1.5")
+                    lines.push("sleep 2")
                     lines.push("MOVED_ADDRS=\"\"")
                     for (var s = 0; s < spawnTargets.length; s++) {
                         var t = spawnTargets[s]
                         var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\\\.desktop$"; "")) == "' + t.cls + '") | .address'
-                        lines.push("ADDRS=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>/dev/null)")
-                        lines.push("echo \"[move-spawn] cls=" + t.cls + " ws=" + t.ws + " addrs=$ADDRS\" >> \"$LOGFILE\"")
-                         lines.push("for A in $ADDRS; do if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]]; then hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>/dev/null || true; MOVED_ADDRS=\"$MOVED_ADDRS $A\"; break; fi; done")
+                        lines.push("ATTEMPT=0")
+                        lines.push("while [ $ATTEMPT -lt 10 ]; do")
+                        lines.push("  ADDRS=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>/dev/null)")
+                        lines.push("  echo \"[move-spawn] attempt=$ATTEMPT cls=" + t.cls + " ws=" + t.ws + " addrs=$ADDRS\" >> \"$LOGFILE\"")
+                        lines.push("  for A in $ADDRS; do")
+                        lines.push("    if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]]; then")
+                        lines.push("      hyprctl dispatch movetoworkspacesilent \"" + t.ws + ",address:$A\" 2>/dev/null || true")
+                        lines.push("      MOVED_ADDRS=\"$MOVED_ADDRS $A\"")
+                        lines.push("      break 2")
+                        lines.push("    fi")
+                        lines.push("  done")
+                        lines.push("  ATTEMPT=$((ATTEMPT+1))")
+                        lines.push("  sleep 0.3")
+                        lines.push("done")
                     }
                 }
 
