@@ -592,15 +592,15 @@ Panel {
                 // Phase 2: Move matched windows to correct workspaces
                 for (var m = 0; m < toMove.length; m++) {
                     var mv = toMove[m]
-                    lines.push("hyprctl dispatch movetoworkspacesilent " + mv.ws + ",address:" + mv.addr + " 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', address='" + mv.addr + "', follow=false})\" 2>/dev/null || true")
                 }
 
                 // Phase 2b: Apply floating state and positioning
                 for (var f = 0; f < toFloat.length; f++) {
                     var fl = toFloat[f]
-                    lines.push("hyprctl dispatch setfloating address:" + fl.addr + " 2>/dev/null || true")
-                    lines.push("hyprctl dispatch movewindowpixel exact " + fl.pos[0] + " " + fl.pos[1] + ",address:" + fl.addr + " 2>/dev/null || true")
-                    lines.push("hyprctl dispatch resizewindowpixel exact " + fl.size[0] + " " + fl.size[1] + ",address:" + fl.addr + " 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.float({action='toggle', address='" + fl.addr + "'})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fl.pos[0] + ", y=" + fl.pos[1] + ", relative=false, address='" + fl.addr + "'})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fl.size[0] + ", y=" + fl.size[1] + ", address='" + fl.addr + "'})\" 2>/dev/null || true")
                 }
 
                 // Phase 3: Spawn missing windows (only those not matched)
@@ -619,7 +619,7 @@ Panel {
                         }
 
                         // Focus target workspace, wait, then launch
-                        lines.push("hyprctl eval \"hl.dsp.workspace({id = " + w.workspace + "})\" 2>/dev/null || true")
+                        lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + w.workspace + "'})\" 2>/dev/null || true")
                         lines.push("sleep 0.3")
                         var escaped = cmd.replace(/'/g, "'\\''")
                         lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
