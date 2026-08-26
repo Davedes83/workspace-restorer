@@ -546,12 +546,21 @@ Panel {
                     return
                 }
 
-                // Close all existing windows by PID — write kill script and run it
+                // Close all existing windows by PID — kill entire process groups
                 var killLines = ["#!/bin/bash"]
                 for (var i = 0; i < existing.length; i++) {
                     var win = existing[i]
-                    killLines.push("kill -9 " + win.pid + " 2>/dev/null")
+                    // Kill process group (negative PID) to catch child processes
+                    killLines.push("kill -9 -" + win.pid + " 2>/dev/null || kill -9 " + win.pid + " 2>/dev/null")
                 }
+                // Also kill any orphaned browser background processes by name
+                killLines.push("pkill -9 -f 'vivaldi-bin' 2>/dev/null || true")
+                killLines.push("pkill -9 -f 'chrome' 2>/dev/null || true")
+                killLines.push("pkill -9 -f 'firefox' 2>/dev/null || true")
+                // Clear browser session files to prevent old tabs from resurrecting
+                killLines.push("rm -f ~/.config/vivaldi/Default/'Last Session' 2>/dev/null || true")
+                killLines.push("rm -f ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
+                killLines.push("sleep 0.5")
                 var scriptContent = killLines.join("\n")
                 var scriptPath = "/tmp/wsrestorer-kill.sh"
                 // Write script and execute in one command
@@ -579,8 +588,10 @@ Panel {
 
     Timer {
         id: killThenSpawnTimer
-        interval: 1000
+        interval: 2000
         onTriggered: {
+            // Clean up stale temp scripts before spawning
+            Quickshell.execDetached(["bash", "-lc", "rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-kill.sh"])
             spawnNext()
         }
     }
