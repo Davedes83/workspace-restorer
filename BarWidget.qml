@@ -478,10 +478,6 @@ Panel {
 
     // --- Restore ---
 
-    property var _restoreProfile: null
-    property var _spawnWindows: []
-    property int _spawnIndex: 0
-
     function doRestore(name) {
         if (root.isRestoring) return
         root.isRestoring = true
@@ -532,117 +528,60 @@ Panel {
                 }
                 var profile = checkExistingProc._profile
 
-                if (!existing || existing.length === 0) {
-                    root._restoreProfile = profile
-                    root._spawnWindows = profile.windows
-                    root._spawnIndex = 0
-                    spawnNext()
-                    return
+                // Build one master script that kills everything then spawns everything
+                var lines = ["#!/bin/bash"]
+
+                // Phase 1: Kill all existing windows
+                if (existing && existing.length > 0) {
+                    for (var i = 0; i < existing.length; i++) {
+                        lines.push("kill -9 " + existing[i].pid + " 2>/dev/null || true")
+                    }
+                }
+                // Safety net kills
+                lines.push("pkill -9 -f 'vivaldi-bin' 2>/dev/null || true")
+                lines.push("pkill -9 -f 'qbittorrent' 2>/dev/null || true")
+                lines.push("pkill -9 -f 'nautilus' 2>/dev/null || true")
+                lines.push("pkill -9 -f 'celluloid' 2>/dev/null || true")
+                lines.push("pkill -9 -f 'imv' 2>/dev/null || true")
+                lines.push("pkill -9 -f 'dua' 2>/dev/null || true")
+                // Clear browser session files
+                lines.push("rm -f ~/.config/vivaldi/Default/'Last Session' 2>/dev/null || true")
+                lines.push("rm -f ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
+                lines.push("sleep 1")
+
+                // Phase 2: Focus workspace, wait, launch app — for each window
+                for (var j = 0; j < profile.windows.length; j++) {
+                    var w = profile.windows[j]
+                    var cmd = w.command || w.class.toLowerCase()
+                    // Focus target workspace
+                    lines.push("hyprctl dispatch 'workspace " + w.workspace + "' 2>/dev/null || true")
+                    lines.push("hyprctl eval \"hl.dsp.workspace({id = " + w.workspace + "})\" 2>/dev/null || true")
+                    lines.push("sleep 0.3")
+                    // Write and execute spawn script (preserves quoting)
+                    var escaped = cmd.replace(/'/g, "'\\''")
+                    lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
+                    lines.push("printf '#!/bin/bash\\n%s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH &")
+                    lines.push("sleep 0.4")
                 }
 
-                // Close ALL existing windows — kill by PID and by known app names
-                var killLines = ["#!/bin/bash"]
-                for (var i = 0; i < existing.length; i++) {
-                    var win = existing[i]
-                    killLines.push("kill -9 " + win.pid + " 2>/dev/null")
-                }
-                // Safety net: kill common apps by name
-                killLines.push("pkill -9 -f 'vivaldi-bin' 2>/dev/null || true")
-                killLines.push("pkill -9 -f 'qbittorrent' 2>/dev/null || true")
-                killLines.push("pkill -9 -f 'nautilus' 2>/dev/null || true")
-                killLines.push("pkill -9 -f 'celluloid' 2>/dev/null || true")
-                killLines.push("pkill -9 -f 'imv' 2>/dev/null || true")
-                killLines.push("pkill -9 -f 'dua' 2>/dev/null || true")
-                // Clear browser session files to prevent old tabs from resurrecting
-                killLines.push("rm -f ~/.config/vivaldi/Default/'Last Session' 2>/dev/null || true")
-                killLines.push("rm -f ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
-                killLines.push("sleep 0.5")
-                var scriptContent = killLines.join("\n")
-                var scriptPath = "/tmp/wsrestorer-kill.sh"
-                killProc._profile = profile
-                killProc.command = ["bash", "-c",
+                lines.push("sleep 1")
+                lines.push("rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-kill.sh 2>/dev/null")
+
+                var scriptContent = lines.join("\n")
+                var scriptPath = "/tmp/wsrestorer-restore.sh"
+                masterRestoreProc._count = profile.windows.length
+                masterRestoreProc.command = ["bash", "-c",
                     "printf '%s\\n' " + Util.shellQuote(scriptContent) + " > " + scriptPath + " && chmod +x " + scriptPath + " && bash " + scriptPath]
-                killProc.running = true
-                return
+                masterRestoreProc.running = true
             }
         }
     }
 
     Process {
-        id: killProc
-        property var _profile: null
+        id: masterRestoreProc
+        property int _count: 0
         command: ["bash", "-c", ""]
         onExited: function(exitCode) {
-            root._restoreProfile = killProc._profile
-            root._spawnWindows = killProc._profile.windows
-            root._spawnIndex = 0
-            killThenSpawnTimer.restart()
-        }
-    }
-
-    Timer {
-        id: killThenSpawnTimer
-        interval: 1000
-        onTriggered: {
-            spawnNext()
-        }
-    }
-
-    property int _spawnPhase: 0 // 0 = focus workspace, 1 = launch app
-
-    Timer {
-        id: spawnTimer
-        interval: 150
-        onTriggered: {
-            if (_spawnPhase === 0) {
-                // Workspace focus has had time to take effect, now launch
-                launchApp()
-            } else {
-                // Focus was just sent, wait then launch
-                _spawnPhase = 0
-                spawnTimer.restart()
-            }
-        }
-    }
-
-    function spawnNext() {
-        if (_spawnIndex >= _spawnWindows.length) {
-            applyLayoutTimer._count = _spawnWindows.length
-            applyLayoutTimer.restart()
-            return
-        }
-
-        var win = _spawnWindows[_spawnIndex]
-        var cmd = win.command || win.class.toLowerCase()
-
-        // Phase 1: Focus the target workspace
-        var focusCmd = "hyprctl eval \"hl.dsp.workspace({id = " + win.workspace + "})\""
-        Quickshell.execDetached(["bash", "-lc", focusCmd])
-
-        // Phase 2: Wait for focus, then launch
-        _spawnPhase = 1
-        spawnTimer.restart()
-    }
-
-    function launchApp() {
-        var win = _spawnWindows[_spawnIndex]
-        var cmd = win.command || win.class.toLowerCase()
-
-        // Write command to temp script to preserve quoting (e.g. inner bash -c)
-        var scriptPath = "/tmp/wsrestorer-spawn-" + _spawnIndex + ".sh"
-        Quickshell.execDetached(["bash", "-lc",
-            "printf '#!/bin/bash\\n%s\\n' " + Util.shellQuote(cmd) + " > " + scriptPath + " && chmod +x " + scriptPath + " && bash " + scriptPath])
-
-        _spawnIndex++
-        spawnTimer.restart()
-    }
-
-    Timer {
-        id: applyLayoutTimer
-        interval: 1500
-        property int _count: 0
-        onTriggered: {
-            Quickshell.execDetached(["bash", "-lc", "rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-kill.sh"])
             root.isRestoring = false
             root.lastAction = "Restored " + _count + " windows"
             root.notify("Workspace restored", _count + " windows launched")
