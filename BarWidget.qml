@@ -546,23 +546,34 @@ Panel {
                     return
                 }
 
-                // Close all existing windows by PID (universal - works for any app)
-                var killCmds = []
+                // Close all existing windows by PID — write kill script and run it
+                var killLines = ["#!/bin/bash"]
                 for (var i = 0; i < existing.length; i++) {
                     var win = existing[i]
-                    killCmds.push("hyprctl eval \"hl.exec_cmd('kill -9 " + win.pid + "')\"")
+                    killLines.push("kill -9 " + win.pid + " 2>/dev/null")
                 }
-                if (killCmds.length > 0) {
-                    var killScript = killCmds.join("; ")
-                    Quickshell.execDetached(["bash", "-lc", killScript])
-                }
-
-                // Wait for processes to die, then spawn new windows
-                root._restoreProfile = profile
-                root._spawnWindows = profile.windows
-                root._spawnIndex = 0
-                killThenSpawnTimer.restart()
+                var scriptContent = killLines.join("\n")
+                var scriptPath = "/tmp/wsrestorer-kill.sh"
+                // Write script and execute in one command
+                killProc._profile = profile
+                killProc.command = ["bash", "-c",
+                    "printf '%s\\n' " + Util.shellQuote(scriptContent) + " > " + scriptPath + " && chmod +x " + scriptPath + " && bash " + scriptPath]
+                killProc.running = true
+                return
             }
+        }
+    }
+
+    Process {
+        id: killProc
+        property var _profile: null
+        command: ["bash", "-c", ""]
+        onExited: function(exitCode) {
+            console.log("WSRESTORE: kill script exited with code " + exitCode)
+            root._restoreProfile = killProc._profile
+            root._spawnWindows = killProc._profile.windows
+            root._spawnIndex = 0
+            killThenSpawnTimer.restart()
         }
     }
 
