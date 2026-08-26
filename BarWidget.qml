@@ -366,7 +366,7 @@ Panel {
                     var clients = JSON.parse(text)
                     var pids = clients.map(function(c) { return c.pid })
                     snapCmdlinesProc._clients = clients
-                    snapCmdlinesProc.command = ["bash", "-lc", "for p in " + pids.join(" ") + "; do cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' '; echo; done"]
+                    snapCmdlinesProc.command = ["bash", "-lc", "for p in " + pids.join(" ") + "; do cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' '; echo '|CWD|' readlink /proc/$p/cwd 2>/dev/null; echo; done"]
                     snapCmdlinesProc.running = true
                 } catch(e) {
                     root.isSnapshotting = false
@@ -385,7 +385,10 @@ Panel {
                 var lines = text.trim().split("\n")
                 var clients = snapCmdlinesProc._clients
                 for (var i = 0; i < clients.length; i++) {
-                    clients[i]._cmdline = (lines[i] || "").trim()
+                    var raw = (lines[i] || "").trim()
+                    var cwdParts = raw.split("|CWD|")
+                    clients[i]._cmdline = (cwdParts[0] || "").trim()
+                    clients[i]._cwd = (cwdParts[1] || "").trim() || null
                 }
                 snapMonitorsProc._clients = clients
                 snapMonitorsProc.running = true
@@ -429,6 +432,7 @@ Panel {
                             "monitor": monName,
                             "monitorId": c.monitor,
                             "command": isFirstForPid ? (c._cmdline || null) : null,
+                            "cwd": c._cwd || null,
                             "position": [c.at[0], c.at[1]],
                             "size": [c.size[0], c.size[1]],
                             "splitRatio": c.splitratio,
@@ -528,7 +532,9 @@ Panel {
                 }
                 var profile = checkExistingProc._profile
 
-                // Smart matching: only kill what doesn't belong, move what does
+                // Terminal classes that support --directory / -D / --working-directory
+                var terminalClasses = ["kitty", "foot", "Alacritty", "alacritty", "wezterm"]
+
                 var lines = ["#!/bin/bash"]
 
                 // Track which profile windows have been matched
@@ -537,6 +543,7 @@ Panel {
 
                 var toKill = []
                 var toMove = []
+                var toFloat = []
 
                 if (existing && existing.length > 0) {
                     for (var i = 0; i < existing.length; i++) {
@@ -556,9 +563,14 @@ Panel {
 
                         if (bestIdx >= 0) {
                             matched[bestIdx] = true
-                            var targetWs = profile.windows[bestIdx].workspace
-                            if (e.workspace.id !== targetWs) {
-                                toMove.push({addr: e.address, ws: targetWs, cls: e.class})
+                            var target = profile.windows[bestIdx]
+                            // Move to correct workspace if needed
+                            if (e.workspace.id !== target.workspace) {
+                                toMove.push({addr: e.address, ws: target.workspace, cls: e.class})
+                            }
+                            // Restore floating state and position
+                            if (target.floating) {
+                                toFloat.push({addr: e.address, pos: target.position, size: target.size})
                             }
                         } else {
                             toKill.push(e)
@@ -571,24 +583,41 @@ Panel {
                     lines.push("kill -9 " + toKill[k].pid + " 2>/dev/null || true")
                 }
 
-                // Phase 2: Move matched windows to correct workspaces
-                for (var m = 0; m < toMove.length; m++) {
-                    var mv = toMove[m]
-                    lines.push("hyprctl dispatch movetoworkspacesilent " + mv.ws + ",address:" + mv.addr + " 2>/dev/null || true")
-                }
-
                 // Clear browser session caches
                 lines.push("rm -f ~/.config/vivaldi/Default/'Last Session' ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
                 lines.push("rm -rf ~/.config/firefox/*/sessionstore-backups/* 2>/dev/null || true")
                 lines.push("rm -f ~/.config/google-chrome/Default/'Current Session' ~/.config/google-chrome/Default/'Current Tabs' 2>/dev/null || true")
                 lines.push("rm -f ~/.config/chromium/Default/'Current Session' ~/.config/chromium/Default/'Current Tabs' 2>/dev/null || true")
 
-                // Phase 3: Spawn missing windows
+                // Phase 2: Move matched windows to correct workspaces
+                for (var m = 0; m < toMove.length; m++) {
+                    var mv = toMove[m]
+                    lines.push("hyprctl dispatch movetoworkspacesilent " + mv.ws + ",address:" + mv.addr + " 2>/dev/null || true")
+                }
+
+                // Phase 2b: Apply floating state and positioning
+                for (var f = 0; f < toFloat.length; f++) {
+                    var fl = toFloat[f]
+                    lines.push("hyprctl dispatch setfloating address:" + fl.addr + " 2>/dev/null || true")
+                    lines.push("hyprctl dispatch movewindowpixel exact " + fl.pos[0] + " " + fl.pos[1] + ",address:" + fl.addr + " 2>/dev/null || true")
+                    lines.push("hyprctl dispatch resizewindowpixel exact " + fl.size[0] + " " + fl.size[1] + ",address:" + fl.addr + " 2>/dev/null || true")
+                }
+
+                // Phase 3: Spawn missing windows (only those not matched)
                 var spawnCount = 0
                 for (var j = 0; j < profile.windows.length; j++) {
                     if (!matched[j]) {
                         var w = profile.windows[j]
                         var cmd = w.command || w.class.toLowerCase()
+
+                        // For terminal apps, inject saved CWD
+                        if (w.cwd && terminalClasses.indexOf(w.class) >= 0) {
+                            var cls = w.class.toLowerCase()
+                            if (cls === "kitty") cmd = "kitty --directory " + w.cwd
+                            else if (cls === "foot") cmd = "foot -D " + w.cwd
+                            else if (cls === "alacritty") cmd = "alacritty --working-directory " + w.cwd
+                        }
+
                         // Focus target workspace, wait, then launch
                         lines.push("hyprctl eval \"hl.dsp.workspace({id = " + w.workspace + "})\" 2>/dev/null || true")
                         lines.push("sleep 0.3")
@@ -603,9 +632,7 @@ Panel {
                 lines.push("sleep 1")
                 lines.push("rm -f /tmp/wsrestorer-spawn-*.sh 2>/dev/null")
 
-                var movedCount = toMove.length
-                var killedCount = toKill.length
-                var totalCount = movedCount + spawnCount
+                var totalCount = toMove.length + toFloat.length + spawnCount
 
                 var scriptContent = lines.join("\n")
                 var scriptPath = "/tmp/wsrestorer-restore.sh"
