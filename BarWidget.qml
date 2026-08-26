@@ -588,13 +588,20 @@ Panel {
         }
     }
 
-    property int spawnDelay: 300
+    property int _spawnPhase: 0 // 0 = focus workspace, 1 = launch app
 
     Timer {
         id: spawnTimer
-        interval: root.spawnDelay
+        interval: 150
         onTriggered: {
-            spawnNext()
+            if (_spawnPhase === 0) {
+                // Workspace focus has had time to take effect, now launch
+                launchApp()
+            } else {
+                // Focus was just sent, wait then launch
+                _spawnPhase = 0
+                spawnTimer.restart()
+            }
         }
     }
 
@@ -608,10 +615,18 @@ Panel {
         var win = _spawnWindows[_spawnIndex]
         var cmd = win.command || win.class.toLowerCase()
 
-        // Focus the target workspace BEFORE launching the app.
-        // New windows open on the focused workspace — no window rules needed.
+        // Phase 1: Focus the target workspace
         var focusCmd = "hyprctl eval \"hl.dsp.workspace({id = " + win.workspace + "})\""
         Quickshell.execDetached(["bash", "-lc", focusCmd])
+
+        // Phase 2: Wait for focus, then launch
+        _spawnPhase = 1
+        spawnTimer.restart()
+    }
+
+    function launchApp() {
+        var win = _spawnWindows[_spawnIndex]
+        var cmd = win.command || win.class.toLowerCase()
 
         // Write command to temp script to preserve quoting (e.g. inner bash -c)
         var scriptPath = "/tmp/wsrestorer-spawn-" + _spawnIndex + ".sh"
