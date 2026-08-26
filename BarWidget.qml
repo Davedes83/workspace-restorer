@@ -413,9 +413,15 @@ Panel {
                     }
 
                     var windows = []
+                    var seenPids = {}
                     for (var i = 0; i < clients.length; i++) {
                         var c = clients[i]
                         var monName = monMap[c.monitor] || String(c.monitor)
+
+                        // Multiple windows from same PID share one command line.
+                        // Only the first window keeps it; others fall back to class name.
+                        var isFirstForPid = !seenPids[c.pid]
+                        seenPids[c.pid] = true
 
                         windows.push({
                             "class": c.class,
@@ -425,7 +431,7 @@ Panel {
                             "workspace": c.workspace.id,
                             "monitor": monName,
                             "monitorId": c.monitor,
-                            "command": c._cmdline || root.resolveExe(c.class),
+                            "command": isFirstForPid ? (c._cmdline || null) : null,
                             "position": [c.at[0], c.at[1]],
                             "size": [c.size[0], c.size[1]],
                             "splitRatio": c.splitratio,
