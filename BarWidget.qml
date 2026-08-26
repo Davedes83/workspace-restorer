@@ -32,8 +32,16 @@ Panel {
     implicitHeight: button.implicitHeight
 
     Component.onCompleted: {
+        Quickshell.execDetached(["bash", "-lc", "mkdir -p ~/.cache && > " + logFile])
         refreshProfiles()
         buildMonitorMap()
+    }
+
+    property string logFile: Quickshell.env("HOME") + "/.cache/wsrestorer.log"
+
+    function wslog(msg) {
+        var line = new Date().toISOString().substring(11, 23) + " " + msg + "\n"
+        Quickshell.execDetached(["bash", "-lc", "echo " + Util.shellQuote(line) + " >> " + logFile])
     }
 
     function notify(summary, body) {
@@ -65,7 +73,7 @@ Panel {
                     }
                     root.monitorMap = map
                 } catch(e) {
-                    console.log("WSRESTORE: failed to parse monitors JSON: " + e)
+                    wslog("WSRESTORE: failed to parse monitors JSON: " + e)
                 }
             }
         }
@@ -371,7 +379,7 @@ Panel {
                     snapCmdlinesProc.command = ["bash", "-lc", "for p in " + pids.join(" ") + "; do cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' '; echo; done"]
                     snapCmdlinesProc.running = true
                 } catch(e) {
-                    console.log("WSRESTORE: failed to parse clients JSON: " + e)
+                    wslog("WSRESTORE: failed to parse clients JSON: " + e)
                     root.isSnapshotting = false
                     root.lastAction = "Failed to capture windows"
                 }
@@ -449,7 +457,7 @@ Panel {
                     saveNameField.text = generateDefaultName()
                     root.showingNameInput = true
                 } catch(e) {
-                    console.log("WSRESTORE: failed to parse monitors JSON: " + e)
+                    wslog("WSRESTORE: failed to parse monitors JSON: " + e)
                     root.isSnapshotting = false
                     root.lastAction = "Failed to capture monitors"
                 }
@@ -505,7 +513,7 @@ Panel {
                     var profile = JSON.parse(text)
                     restoreWithConflicts(profile)
                 } catch(e) {
-                    console.log("WSRESTORE: failed to parse profile JSON: " + e)
+                    wslog("WSRESTORE: failed to parse profile JSON: " + e)
                     root.isRestoring = false
                     root.lastAction = "Failed to load profile"
                 }
@@ -533,13 +541,13 @@ Panel {
                 try {
                     var existing = JSON.parse(text)
                 } catch(e) {
-                    console.log("WSRESTORE: failed to parse clients JSON: " + e)
+                    wslog("WSRESTORE: failed to parse clients JSON: " + e)
                     existing = []
                 }
                 var profile = checkExistingProc._profile
 
                 if (!existing || existing.length === 0) {
-                    console.log("WSRESTORE: no existing windows, spawning directly")
+                    wslog("WSRESTORE: no existing windows, spawning directly")
                     root._restoreProfile = profile
                     root._spawnWindows = profile.windows
                     root._spawnIndex = 0
@@ -547,9 +555,9 @@ Panel {
                     return
                 }
 
-                console.log("WSRESTORE: found " + existing.length + " existing windows to kill")
+                wslog("WSRESTORE: found " + existing.length + " existing windows to kill")
                 for (var i = 0; i < existing.length; i++) {
-                    console.log("WSRESTORE-EXISTING[" + i + "]: pid=" + existing[i].pid + " class=" + existing[i].class)
+                    wslog("WSRESTORE-EXISTING[" + i + "]: pid=" + existing[i].pid + " class=" + existing[i].class)
                 }
 
                 // Close all existing windows by PID — kill entire process groups
@@ -592,14 +600,16 @@ Panel {
         command: ["bash", "-c", ""]
         stdout: StdioCollector {
             waitForEnd: true
-            onStreamFinished: { console.log("WSRESTORE-KILL-OUTPUT:\n" + text) }
+            onStreamFinished: {
+                root.wslog("WSRESTORE-KILL-OUTPUT: " + text.replace(/\n/g, " | "))
+            }
         }
         onExited: function(exitCode) {
-            console.log("WSRESTORE: kill script exited with code " + exitCode)
-            console.log("WSRESTORE: spawning " + killProc._profile.windows.length + " windows")
+            wslog("WSRESTORE: kill script exited with code " + exitCode)
+            wslog("WSRESTORE: spawning " + killProc._profile.windows.length + " windows")
             for (var i = 0; i < killProc._profile.windows.length; i++) {
                 var w = killProc._profile.windows[i]
-                console.log("WSRESTORE-SPAWN[" + i + "]: class=" + w.class + " ws=" + w.workspace + " cmd=" + w.command)
+                wslog("WSRESTORE-SPAWN[" + i + "]: class=" + w.class + " ws=" + w.workspace + " cmd=" + w.command)
             }
             root._restoreProfile = killProc._profile
             root._spawnWindows = killProc._profile.windows
@@ -630,7 +640,7 @@ Panel {
 
     function spawnNext() {
         if (_spawnIndex >= _spawnWindows.length) {
-            console.log("WSRESTORE: all " + _spawnWindows.length + " windows spawned")
+            wslog("WSRESTORE: all " + _spawnWindows.length + " windows spawned")
             applyLayoutTimer._count = _spawnWindows.length
             applyLayoutTimer.restart()
             return
@@ -638,7 +648,7 @@ Panel {
 
         var win = _spawnWindows[_spawnIndex]
         var cmd = win.command || win.class.toLowerCase()
-        console.log("WSRESTORE: spawn[" + _spawnIndex + "] class=" + win.class + " ws=" + win.workspace + " cmd=" + cmd)
+        wslog("WSRESTORE: spawn[" + _spawnIndex + "] class=" + win.class + " ws=" + win.workspace + " cmd=" + cmd)
 
         // Set a window rule matching the original class → target workspace
         var ruleCmd = "hyprctl eval \"hl.window_rule({match = {class = '" + win.class + "'}, workspace = '" + win.workspace + "'})\""
