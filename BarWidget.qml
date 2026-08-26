@@ -612,13 +612,8 @@ Panel {
                 }
 
                 // Phase 3: Spawn missing windows
-                // Capture the spawned app's PID. Because the wrapper uses
-                // `exec`, `bash $SPATH` BECOMES the app, so $! is the app's
-                // real PID. Phase 3b then matches the exact window by pid,
-                // which is unambiguous (class matching broke on multi-window
-                // / same-class apps and on the jq gsub regex escaping).
                 var spawnCount = 0
-                var spawnIndices = []
+                var spawnTargets = []
                 for (var j = 0; j < profile.windows.length; j++) {
                     if (!matched[j]) {
                         var w = profile.windows[j]
@@ -635,23 +630,27 @@ Panel {
                         var escaped = cmd.replace(/'/g, "'\\''")
                         lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
                         lines.push("printf '#!/bin/bash\\nexec %s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH &")
-                        lines.push("SPID_" + j + "=$!")
-                        lines.push("WS_" + j + "='" + w.workspace + "'")
-                        lines.push("echo \"[spawn] j=" + j + " pid=$SPID_" + j + " ws=$WS_" + j + "\" >> \"$LOGFILE\"")
-                        spawnIndices.push(j)
+                        // Class-based targeting. GUI apps FORK, so the PID we
+                        // capture via $! is NOT the window's PID — class is the
+                        // only stable identifier across forking.
+                        spawnTargets.push({cls: w.class.toLowerCase().replace(/\.desktop$/, ""), ws: String(w.workspace)})
                         spawnCount++
                     }
                 }
 
                 // Phase 3b: Wait for windows to register, then move each to its
-                // snapshotted workspace by matching the spawned PID.
+                // snapshotted workspace by CLASS (fork-stable). Sequential
+                // assignment avoids moving the same window twice when several
+                // profile entries share a class.
                 if (spawnCount > 0) {
                     lines.push("sleep 1.5")
-                    for (var si = 0; si < spawnIndices.length; si++) {
-                        var jx = spawnIndices[si]
-                        lines.push("ADDR=$(hyprctl clients -j | jq -r --arg p \"$SPID_" + jx + "\" '.[] | select(.pid == ($p|tonumber)) | .address' 2>/dev/null)")
-                        lines.push("echo \"[move-spawn] j=" + jx + " pid=$SPID_" + jx + " addr=$ADDR ws=$WS_" + jx + "\" >> \"$LOGFILE\"")
-                        lines.push("if [ -n \"$ADDR\" ]; then hyprctl dispatch \"hl.dsp.window.move({workspace='\"$WS_" + jx + "\"', address='\"$ADDR\"', follow=false})\" 2>/dev/null || true; fi")
+                    lines.push("MOVED_ADDRS=\"\"")
+                    for (var s = 0; s < spawnTargets.length; s++) {
+                        var t = spawnTargets[s]
+                        var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\\\.desktop$"; "")) == "' + t.cls + '") | .address'
+                        lines.push("ADDRS=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>/dev/null)")
+                        lines.push("echo \"[move-spawn] cls=" + t.cls + " ws=" + t.ws + " addrs=$ADDRS\" >> \"$LOGFILE\"")
+                        lines.push("for A in $ADDRS; do if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]]; then hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', address='$A', follow=false})\" 2>/dev/null || true; MOVED_ADDRS=\"$MOVED_ADDRS $A\"; break; fi; done")
                     }
                 }
 
