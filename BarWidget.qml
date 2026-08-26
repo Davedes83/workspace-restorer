@@ -618,13 +618,12 @@ Panel {
                             else if (cls === "alacritty") cmd = "alacritty --working-directory " + w.cwd
                         }
 
-                        // Focus target workspace, wait, then launch
+                        // Focus target workspace, wait, then launch (blocking, no &)
                         lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + w.workspace + "'})\" 2>/dev/null || true")
-                        lines.push("sleep 0.3")
+                        lines.push("sleep 0.2")
                         var escaped = cmd.replace(/'/g, "'\\''")
                         lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
-                        lines.push("printf '#!/bin/bash\\n%s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH &")
-                        lines.push("sleep 0.4")
+                        lines.push("printf '#!/bin/bash\\n%s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH")
                         spawnCount++
                     }
                 }
