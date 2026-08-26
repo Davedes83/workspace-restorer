@@ -536,6 +536,13 @@ Panel {
                 var terminalClasses = ["kitty", "foot", "Alacritty", "alacritty", "wezterm"]
 
                 var lines = ["#!/bin/bash"]
+                lines.push("LOGFILE=/tmp/wsrestorer-debug.log")
+                lines.push("echo \"=== restore start $(date) ===\" > $LOGFILE")
+                // Debug log written by the script itself (Quickshell's
+                // execDetached logging is unavailable). Inspect
+                // /tmp/wsrestorer-debug.log after a restore.
+                lines.push("LOGFILE=/tmp/wsrestorer-debug.log; : > \"$LOGFILE\"")
+                lines.push("echo \"[start] profile_windows=" + profile.windows.length + " existing=" + (existing ? existing.length : 0) + "\" >> \"$LOGFILE\"")
 
                 // Track which profile windows have been matched
                 var matched = []
@@ -565,7 +572,7 @@ Panel {
                             matched[bestIdx] = true
                             var target = profile.windows[bestIdx]
                             // Move to correct workspace if needed
-                            if (e.workspace.id !== target.workspace) {
+                            if (String(e.workspace.id) !== String(target.workspace)) {
                                 toMove.push({addr: e.address, ws: target.workspace, cls: e.class})
                             }
                             // Restore floating state and position
@@ -592,6 +599,7 @@ Panel {
                 // Phase 2: Move matched windows to correct workspaces
                 for (var m = 0; m < toMove.length; m++) {
                     var mv = toMove[m]
+                    lines.push("echo \"[move-existing] ws=" + mv.ws + " addr=" + mv.addr + "\" >> \"$LOGFILE\"")
                     lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', address='" + mv.addr + "', follow=false})\" 2>/dev/null || true")
                 }
 
@@ -604,8 +612,13 @@ Panel {
                 }
 
                 // Phase 3: Spawn missing windows
+                // Capture the spawned app's PID. Because the wrapper uses
+                // `exec`, `bash $SPATH` BECOMES the app, so $! is the app's
+                // real PID. Phase 3b then matches the exact window by pid,
+                // which is unambiguous (class matching broke on multi-window
+                // / same-class apps and on the jq gsub regex escaping).
                 var spawnCount = 0
-                var spawnTargets = []
+                var spawnIndices = []
                 for (var j = 0; j < profile.windows.length; j++) {
                     if (!matched[j]) {
                         var w = profile.windows[j]
@@ -622,19 +635,23 @@ Panel {
                         var escaped = cmd.replace(/'/g, "'\\''")
                         lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
                         lines.push("printf '#!/bin/bash\\nexec %s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH &")
-                        spawnTargets.push({cls: w.class.toLowerCase().replace(/\.desktop$/, ""), ws: w.workspace})
+                        lines.push("SPID_" + j + "=$!")
+                        lines.push("WS_" + j + "='" + w.workspace + "'")
+                        lines.push("echo \"[spawn] j=" + j + " pid=$SPID_" + j + " ws=$WS_" + j + "\" >> \"$LOGFILE\"")
+                        spawnIndices.push(j)
                         spawnCount++
                     }
                 }
 
-                // Phase 3b: Wait for windows to register, then move via jq
+                // Phase 3b: Wait for windows to register, then move each to its
+                // snapshotted workspace by matching the spawned PID.
                 if (spawnCount > 0) {
                     lines.push("sleep 1.5")
-                    for (var s = 0; s < spawnTargets.length; s++) {
-                        var t = spawnTargets[s]
-                        var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\.desktop$"; "")) == "' + t.cls + '") | .address'
-                        lines.push("ADDR=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>/dev/null | head -1)")
-                        lines.push("if [ -n \"$ADDR\" ]; then hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', address='\" + $ADDR + \"', follow=false})\" 2>/dev/null; fi")
+                    for (var si = 0; si < spawnIndices.length; si++) {
+                        var jx = spawnIndices[si]
+                        lines.push("ADDR=$(hyprctl clients -j | jq -r --arg p \"$SPID_" + jx + "\" '.[] | select(.pid == ($p|tonumber)) | .address' 2>/dev/null)")
+                        lines.push("echo \"[move-spawn] j=" + jx + " pid=$SPID_" + jx + " addr=$ADDR ws=$WS_" + jx + "\" >> \"$LOGFILE\"")
+                        lines.push("if [ -n \"$ADDR\" ]; then hyprctl dispatch \"hl.dsp.window.move({workspace='\"$WS_" + jx + "\"', address='\"$ADDR\"', follow=false})\" 2>/dev/null || true; fi")
                     }
                 }
 
