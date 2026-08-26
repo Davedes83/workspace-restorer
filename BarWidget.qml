@@ -545,8 +545,10 @@ Panel {
                 lines.push("pkill -9 -f 'imv' 2>/dev/null || true")
                 lines.push("pkill -9 -f 'dua' 2>/dev/null || true")
                 // Clear browser session files
-                lines.push("rm -f ~/.config/vivaldi/Default/'Last Session' 2>/dev/null || true")
-                lines.push("rm -f ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
+                lines.push("rm -f ~/.config/vivaldi/Default/'Last Session' ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
+                lines.push("rm -rf ~/.config/firefox/*/sessionstore-backups/* 2>/dev/null || true")
+                lines.push("rm -f ~/.config/google-chrome/Default/'Current Session' ~/.config/google-chrome/Default/'Current Tabs' 2>/dev/null || true")
+                lines.push("rm -f ~/.config/chromium/Default/'Current Session' ~/.config/chromium/Default/'Current Tabs' 2>/dev/null || true")
                 lines.push("sleep 1")
 
                 // Phase 2: Focus workspace, wait, launch app — for each window
