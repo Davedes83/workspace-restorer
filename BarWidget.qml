@@ -14,6 +14,7 @@ Panel {
 
     property var profiles: []
     property bool isSnapshotting: false
+    property bool isRestoring: false
     property string lastAction: ""
     property string profileDir: Quickshell.env("HOME") + "/.config/omarchy/workspace-restorer"
     property var pendingSnapshot: null
@@ -56,35 +57,22 @@ Panel {
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: {
-                var monitors = JSON.parse(text)
-                var map = {}
-                for (var i = 0; i < monitors.length; i++) {
-                    map[monitors[i].id] = monitors[i].name
+                try {
+                    var monitors = JSON.parse(text)
+                    var map = {}
+                    for (var i = 0; i < monitors.length; i++) {
+                        map[monitors[i].id] = monitors[i].name
+                    }
+                    root.monitorMap = map
+                } catch(e) {
+                    console.log("WSRESTORE: failed to parse monitors JSON: " + e)
                 }
-                root.monitorMap = map
             }
         }
     }
 
     function resolveExe(className) {
-        var lower = className.toLowerCase()
-        var known = {
-            "org.omarchy.opencode": "kitty opencode",
-            "org.qbittorrent.qbittorrent": "qbittorrent",
-            "org.gnome.nautilus": "nautilus --new-window",
-            "com.github.xournalpp.xournalpp": "xournalpp",
-            "io.github.celluloid.celluloid": "celluloid",
-            "org.mozilla.firefox": "firefox",
-            "com.spotify.client": "spotify",
-            "org.telegram.desktop": "telegram-desktop",
-            "io.github.qutebrowser.qutebrowser": "qutebrowser",
-            "net.davidotek.pupgui2": "lutris",
-            "com.valvesoftware.steam": "steam",
-            "heroic": "heroic"
-        }
-        if (known[lower]) return known[lower]
-        if (known[className]) return known[className]
-        return lower
+        return className.toLowerCase()
     }
 
     // --- Bar Button ---
@@ -123,7 +111,7 @@ Panel {
             visible: !root.showingNameInput
 
             PanelHero {
-                title: "Workspace Restorer"
+                title: root.isRestoring ? "Restoring..." : "Workspace Restorer"
             }
 
             Rectangle {
@@ -136,21 +124,21 @@ Panel {
                 width: parent.width
                 height: 36
                 radius: Style.cornerRadius
-                color: root.hoverBg
+                color: root.isRestoring ? Qt.darker(Color.bar.background, 1.15) : root.hoverBg
 
                 Row {
                     anchors.centerIn: parent
                     spacing: 6
 
                     Text {
-                        text: root.isSnapshotting ? "󰅧" : "󰅧"
+                        text: root.isSnapshotting ? "󰏇" : root.isRestoring ? "󰑐" : "󰅧"
                         color: Color.bar.text
                         font.pixelSize: 14
                         anchors.verticalCenter: parent.verticalCenter
                     }
 
                     Text {
-                        text: root.isSnapshotting ? "Capturing..." : "Take Snapshot"
+                        text: root.isSnapshotting ? "Capturing..." : root.isRestoring ? "Restoring..." : "Take Snapshot"
                         color: Color.bar.text
                         font.family: Style.font.family
                         font.pixelSize: Style.font.body
@@ -162,6 +150,7 @@ Panel {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     hoverEnabled: true
+                    enabled: !root.isRestoring && !root.isSnapshotting
                     onContainsMouseChanged: parent.color = containsMouse ? root.selectedBg : root.hoverBg
                     onClicked: root.doSnapshot()
                 }
@@ -208,6 +197,7 @@ Panel {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
                                     hoverEnabled: true
+                                    enabled: !root.isRestoring && !root.isSnapshotting
                                     onContainsMouseChanged: parent.parent.parent.color = containsMouse ? root.hoverBg : Qt.darker(Color.bar.background, 1.05)
                                     onClicked: root.doRestore(modelData)
                                 }
@@ -223,6 +213,7 @@ Panel {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
                                     hoverEnabled: true
+                                    enabled: !root.isRestoring && !root.isSnapshotting
                                     onContainsMouseChanged: parent.parent.color = containsMouse ? "#663333" : "transparent"
                                     onClicked: root.doDelete(modelData)
                                 }
@@ -271,7 +262,7 @@ Panel {
                 placeholderText: "Profile name"
                 color: Color.bar.text
                 font.family: Style.font.family
-                        font.pixelSize: Style.font.body
+                font.pixelSize: Style.font.body
                 leftPadding: 10
                 background: Rectangle {
                     color: Qt.darker(Color.bar.background, 1.08)
@@ -294,7 +285,7 @@ Panel {
                     text: "  Save"
                     color: Color.bar.text
                     font.family: Style.font.family
-                        font.pixelSize: Style.font.body
+                    font.pixelSize: Style.font.body
                 }
 
                 MouseArea {
@@ -317,7 +308,7 @@ Panel {
                     text: "Cancel"
                     color: Qt.darker(Color.bar.text, 1.5)
                     font.family: Style.font.family
-                        font.pixelSize: Style.font.body
+                    font.pixelSize: Style.font.body
                 }
 
                 MouseArea {
@@ -373,11 +364,17 @@ Panel {
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: {
-                var clients = JSON.parse(text)
-                var pids = clients.map(function(c) { return c.pid })
-                snapCmdlinesProc._clients = clients
-                snapCmdlinesProc.command = ["bash", "-lc", "for p in " + pids.join(" ") + "; do cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' '; echo; done"]
-                snapCmdlinesProc.running = true
+                try {
+                    var clients = JSON.parse(text)
+                    var pids = clients.map(function(c) { return c.pid })
+                    snapCmdlinesProc._clients = clients
+                    snapCmdlinesProc.command = ["bash", "-lc", "for p in " + pids.join(" ") + "; do cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' '; echo; done"]
+                    snapCmdlinesProc.running = true
+                } catch(e) {
+                    console.log("WSRESTORE: failed to parse clients JSON: " + e)
+                    root.isSnapshotting = false
+                    root.lastAction = "Failed to capture windows"
+                }
             }
         }
     }
@@ -406,44 +403,50 @@ Panel {
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: {
-                var monitors = JSON.parse(text)
-                var clients = snapMonitorsProc._clients
+                try {
+                    var monitors = JSON.parse(text)
+                    var clients = snapMonitorsProc._clients
 
-                var monMap = {}
-                for (var m = 0; m < monitors.length; m++) {
-                    monMap[monitors[m].id] = monitors[m].name
-                }
+                    var monMap = {}
+                    for (var m = 0; m < monitors.length; m++) {
+                        monMap[monitors[m].id] = monitors[m].name
+                    }
 
-                var windows = []
-                for (var i = 0; i < clients.length; i++) {
-                    var c = clients[i]
-                    var monName = monMap[c.monitor] || String(c.monitor)
+                    var windows = []
+                    for (var i = 0; i < clients.length; i++) {
+                        var c = clients[i]
+                        var monName = monMap[c.monitor] || String(c.monitor)
 
-                    windows.push({
-                        "class": c.class,
-                        "title": c.title,
-                        "pid": c.pid,
-                        "address": c.address,
-                        "workspace": c.workspace.id,
-                        "monitor": monName,
-                        "monitorId": c.monitor,
-                        "command": c._cmdline || root.resolveExe(c.class),
-                        "position": [c.at[0], c.at[1]],
-                        "size": [c.size[0], c.size[1]],
-                        "splitRatio": c.splitratio,
-                        "floating": c.floating,
-                        "fullscreen": c.fullscreen
-                    })
+                        windows.push({
+                            "class": c.class,
+                            "title": c.title,
+                            "pid": c.pid,
+                            "address": c.address,
+                            "workspace": c.workspace.id,
+                            "monitor": monName,
+                            "monitorId": c.monitor,
+                            "command": c._cmdline || root.resolveExe(c.class),
+                            "position": [c.at[0], c.at[1]],
+                            "size": [c.size[0], c.size[1]],
+                            "splitRatio": c.splitratio,
+                            "floating": c.floating,
+                            "fullscreen": c.fullscreen
+                        })
+                    }
+                    root.pendingSnapshot = {
+                        "timestamp": Date.now(),
+                        "windows": windows,
+                        "monitors": monitors
+                    }
+                    root.isSnapshotting = false
+                    root.lastAction = "Captured " + windows.length + " windows"
+                    saveNameField.text = generateDefaultName()
+                    root.showingNameInput = true
+                } catch(e) {
+                    console.log("WSRESTORE: failed to parse monitors JSON: " + e)
+                    root.isSnapshotting = false
+                    root.lastAction = "Failed to capture monitors"
                 }
-                root.pendingSnapshot = {
-                    "timestamp": Date.now(),
-                    "windows": windows,
-                    "monitors": monitors
-                }
-                root.isSnapshotting = false
-                root.lastAction = "Captured " + windows.length + " windows"
-                saveNameField.text = generateDefaultName()
-                root.showingNameInput = true
             }
         }
     }
@@ -473,7 +476,14 @@ Panel {
 
     // --- Restore ---
 
+    property var _restoreProfile: null
+    property var _spawnWindows: []
+    property int _spawnIndex: 0
+
     function doRestore(name) {
+        if (root.isRestoring) return
+        root.isRestoring = true
+        root.lastAction = "Restoring..."
         var path = root.profileDir + "/" + name + ".json"
         restoreProc.command = ["bash", "-lc", "cat " + Util.shellQuote(path)]
         restoreProc.running = true
@@ -485,14 +495,21 @@ Panel {
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: {
-                var profile = JSON.parse(text)
-                restoreWithConflicts(profile)
+                try {
+                    var profile = JSON.parse(text)
+                    restoreWithConflicts(profile)
+                } catch(e) {
+                    console.log("WSRESTORE: failed to parse profile JSON: " + e)
+                    root.isRestoring = false
+                    root.lastAction = "Failed to load profile"
+                }
             }
         }
     }
 
     function restoreWithConflicts(profile) {
         if (!profile || !profile.windows || profile.windows.length === 0) {
+            root.isRestoring = false
             root.lastAction = "Profile is empty"
             return
         }
@@ -507,37 +524,37 @@ Panel {
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: {
-                var existing = JSON.parse(text)
+                try {
+                    var existing = JSON.parse(text)
+                } catch(e) {
+                    console.log("WSRESTORE: failed to parse clients JSON: " + e)
+                    existing = []
+                }
                 var profile = checkExistingProc._profile
 
                 if (!existing || existing.length === 0) {
-                    pendingSpawns._windows = profile.windows
-                    pendingSpawns._index = 0
-                    pendingSpawns._total = profile.windows.length
-                    pendingSpawns._profile = profile
+                    root._restoreProfile = profile
+                    root._spawnWindows = profile.windows
+                    root._spawnIndex = 0
                     spawnNext()
                     return
                 }
 
-                // Close all existing windows by address (universal - works for any app)
-                console.log("WSRESTORE: closing " + existing.length + " windows")
+                // Close all existing windows by PID (universal - works for any app)
                 var killCmds = []
                 for (var i = 0; i < existing.length; i++) {
                     var win = existing[i]
-                    console.log("WSRESTORE: closing " + win.class + " pid=" + win.pid)
-                    killCmds.push("hyprctl eval \"hl.exec_cmd('kill " + win.pid + "')\"")
+                    killCmds.push("hyprctl eval \"hl.exec_cmd('kill -9 " + win.pid + "')\"")
                 }
                 if (killCmds.length > 0) {
                     var killScript = killCmds.join("; ")
-                    console.log("WSRESTORE: killScript=" + killScript)
                     Quickshell.execDetached(["bash", "-lc", killScript])
                 }
 
                 // Wait for processes to die, then spawn new windows
-                pendingSpawns._windows = profile.windows
-                pendingSpawns._index = 0
-                pendingSpawns._total = profile.windows.length
-                pendingSpawns._profile = profile
+                root._restoreProfile = profile
+                root._spawnWindows = profile.windows
+                root._spawnIndex = 0
                 killThenSpawnTimer.restart()
             }
         }
@@ -547,24 +564,11 @@ Panel {
         id: killThenSpawnTimer
         interval: 1000
         onTriggered: {
-            spawnWindows(pendingSpawns._windows, pendingSpawns._profile)
+            spawnNext()
         }
     }
 
     property int spawnDelay: 400
-
-    function spawnWindows(windows, profile) {
-        if (windows.length === 0) {
-            root.lastAction = "Layout restored (all windows already running)"
-            root.notify("Workspace restored", "All windows were already in place")
-            return
-        }
-        pendingSpawns._windows = windows
-        pendingSpawns._index = 0
-        pendingSpawns._total = windows.length
-        pendingSpawns._profile = profile
-        spawnNext()
-    }
 
     Timer {
         id: spawnTimer
@@ -575,14 +579,13 @@ Panel {
     }
 
     function spawnNext() {
-        var data = pendingSpawns
-        if (data._index >= data._windows.length) {
-            applyLayoutTimer._windows = data._windows
+        if (_spawnIndex >= _spawnWindows.length) {
+            applyLayoutTimer._count = _spawnWindows.length
             applyLayoutTimer.restart()
             return
         }
 
-        var win = data._windows[data._index]
+        var win = _spawnWindows[_spawnIndex]
         var cmd = win.command || win.class.toLowerCase()
 
         // Set a window rule matching the original class → target workspace
@@ -590,33 +593,25 @@ Panel {
         Quickshell.execDetached(["bash", "-lc", ruleCmd])
 
         // Write command to temp script to preserve quoting (e.g. inner bash -c)
-        var scriptPath = "/tmp/wsrestorer-spawn-" + data._index + ".sh"
+        var scriptPath = "/tmp/wsrestorer-spawn-" + _spawnIndex + ".sh"
         Quickshell.execDetached(["bash", "-lc",
-            "echo '#!/bin/bash' > " + scriptPath + " && echo " + Util.shellQuote(cmd) + " >> " + scriptPath + " && chmod +x " + scriptPath])
-        Quickshell.execDetached(["bash", scriptPath])
+            "printf '#!/bin/bash\\n%s\\n' " + Util.shellQuote(cmd) + " > " + scriptPath + " && chmod +x " + scriptPath + " && bash " + scriptPath])
 
-        data._index++
+        _spawnIndex++
         spawnTimer.restart()
     }
-
-    property var pendingSpawns: ({
-        _windows: [],
-        _index: 0,
-        _total: 0,
-        _profile: null
-    })
 
     Timer {
         id: applyLayoutTimer
         interval: 1500
-        property var _windows: []
-        onTriggered: root.applyLayout(_windows)
-    }
-
-    function applyLayout(windows) {
-        root.lastAction = "Restored " + windows.length + " windows"
-        root.notify("Workspace restored",
-            windows.length + " windows launched")
+        property int _count: 0
+        onTriggered: {
+            // Cleanup temp spawn scripts
+            Quickshell.execDetached(["bash", "-lc", "rm -f /tmp/wsrestorer-spawn-*.sh"])
+            root.isRestoring = false
+            root.lastAction = "Restored " + _count + " windows"
+            root.notify("Workspace restored", _count + " windows launched")
+        }
     }
 
     // --- Delete ---
