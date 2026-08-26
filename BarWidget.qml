@@ -539,6 +539,7 @@ Panel {
                 var profile = checkExistingProc._profile
 
                 if (!existing || existing.length === 0) {
+                    console.log("WSRESTORE: no existing windows, spawning directly")
                     root._restoreProfile = profile
                     root._spawnWindows = profile.windows
                     root._spawnIndex = 0
@@ -546,10 +547,16 @@ Panel {
                     return
                 }
 
+                console.log("WSRESTORE: found " + existing.length + " existing windows to kill")
+                for (var i = 0; i < existing.length; i++) {
+                    console.log("WSRESTORE-EXISTING[" + i + "]: pid=" + existing[i].pid + " class=" + existing[i].class)
+                }
+
                 // Close all existing windows by PID — kill entire process groups
-                var killLines = ["#!/bin/bash"]
+                var killLines = ["#!/bin/bash", "echo 'WSRESTORE-KILL: starting'"]
                 for (var i = 0; i < existing.length; i++) {
                     var win = existing[i]
+                    killLines.push("echo 'WSRESTORE-KILL: killing pid=" + win.pid + " class=" + win.class + "'")
                     // Kill process group (negative PID) to catch child processes
                     killLines.push("kill -9 -" + win.pid + " 2>/dev/null || kill -9 " + win.pid + " 2>/dev/null")
                 }
@@ -560,7 +567,13 @@ Panel {
                 // Clear browser session files to prevent old tabs from resurrecting
                 killLines.push("rm -f ~/.config/vivaldi/Default/'Last Session' 2>/dev/null || true")
                 killLines.push("rm -f ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
-                killLines.push("sleep 0.5")
+                killLines.push("sleep 1")
+                killLines.push("echo 'WSRESTORE-KILL: checking survivors'")
+                killLines.push("pgrep -a vivaldi-bin || echo 'WSRESTORE-KILL: no vivaldi survivors'")
+                killLines.push("pgrep -a -f kitty || echo 'WSRESTORE-KILL: no kitty survivors'")
+                killLines.push("pgrep -a qbittorrent || echo 'WSRESTORE-KILL: no qbittorrent survivors'")
+                killLines.push("pgrep -a nautilus || echo 'WSRESTORE-KILL: no nautilus survivors'")
+                killLines.push("echo 'WSRESTORE-KILL: done'")
                 var scriptContent = killLines.join("\n")
                 var scriptPath = "/tmp/wsrestorer-kill.sh"
                 // Write script and execute in one command
@@ -577,8 +590,17 @@ Panel {
         id: killProc
         property var _profile: null
         command: ["bash", "-c", ""]
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: { console.log("WSRESTORE-KILL-OUTPUT:\n" + text) }
+        }
         onExited: function(exitCode) {
             console.log("WSRESTORE: kill script exited with code " + exitCode)
+            console.log("WSRESTORE: spawning " + killProc._profile.windows.length + " windows")
+            for (var i = 0; i < killProc._profile.windows.length; i++) {
+                var w = killProc._profile.windows[i]
+                console.log("WSRESTORE-SPAWN[" + i + "]: class=" + w.class + " ws=" + w.workspace + " cmd=" + w.command)
+            }
             root._restoreProfile = killProc._profile
             root._spawnWindows = killProc._profile.windows
             root._spawnIndex = 0
@@ -608,6 +630,7 @@ Panel {
 
     function spawnNext() {
         if (_spawnIndex >= _spawnWindows.length) {
+            console.log("WSRESTORE: all " + _spawnWindows.length + " windows spawned")
             applyLayoutTimer._count = _spawnWindows.length
             applyLayoutTimer.restart()
             return
@@ -615,6 +638,7 @@ Panel {
 
         var win = _spawnWindows[_spawnIndex]
         var cmd = win.command || win.class.toLowerCase()
+        console.log("WSRESTORE: spawn[" + _spawnIndex + "] class=" + win.class + " ws=" + win.workspace + " cmd=" + cmd)
 
         // Set a window rule matching the original class → target workspace
         var ruleCmd = "hyprctl eval \"hl.window_rule({match = {class = '" + win.class + "'}, workspace = '" + win.workspace + "'})\""
