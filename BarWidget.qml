@@ -189,7 +189,7 @@ Panel {
                         radius: Style.cornerRadius
                         color: Qt.darker(Color.bar.background, 1.05)
 
-                        Row {
+                        RowLayout {
                             anchors.fill: parent
                             anchors.margins: 6
                             spacing: 6
@@ -198,7 +198,7 @@ Panel {
                                 text: root.profileIconFor(modelData)
                                 color: Qt.darker(Color.bar.text, 1.4)
                                 font.pixelSize: 13
-                                anchors.verticalCenter: parent.verticalCenter
+                                Layout.alignment: Qt.AlignVCenter
                             }
 
                             Text {
@@ -206,9 +206,8 @@ Panel {
                                 color: Color.bar.text
                                 font.family: Style.font.family
                                 font.pixelSize: Style.font.body
-                                anchors.verticalCenter: parent.verticalCenter
+                                Layout.alignment: Qt.AlignVCenter
                                 Layout.fillWidth: true
-                                width: parent.width - 70
                                 elide: Text.ElideRight
 
                                 MouseArea {
@@ -225,7 +224,7 @@ Panel {
                                 text: "󰆴"
                                 color: Qt.darker(Color.bar.text, 1.4)
                                 font.pixelSize: 13
-                                anchors.verticalCenter: parent.verticalCenter
+                                Layout.alignment: Qt.AlignVCenter
 
                                 MouseArea {
                                     anchors.fill: parent
