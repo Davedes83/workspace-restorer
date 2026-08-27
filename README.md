@@ -1,3 +1,5 @@
+<img width="1874" height="525" alt="Workspace Restore" src="https://github.com/user-attachments/assets/59c65425-2446-405c-aaa2-2636177fa2fb" />
+
 ---
 # Workspace Restorer
 
