@@ -1,20 +1,21 @@
+---
 # Workspace Restorer
 
-An Omarchy shell plugin for Hyprland that snapshots and restores workspace layouts as named profiles.
+An Omarchy shell plugin (Quickshell) for Hyprland that snapshots your window layout and brings it back on demand as named profiles.
 
 ## Features
 
-- **Snapshot** — Capture all open windows, their positions, workspaces, and monitor assignments
-- **Restore** — Re-launch windows into their exact workspace and monitor layout
-- **Conflict Detection** — Avoids duplicate spawns; moves already-running windows to the correct workspace
-- **Layout Restoration** — Applies tiling ratios and floating positions after spawning
-- **Desktop Notifications** — Feedback on snapshot/restore/delete actions
+- **Snapshot** — Capture every open window: app, workspace, screen position, size, floating/fullscreen state, and working directory
+- **Restore** — Re-launch missing apps directly onto the exact workspace they were on; move already-running windows back to the right workspace
+- **Conflict Detection** — Avoids duplicate spawns; repositions existing windows instead of relaunching them
+- **Layout Restoration** — Restores floating and fullscreen state for matched and spawned windows
+- **Desktop Notifications** — Feedback on snapshot/save/restore/delete actions
 
 ## Installation
 
 ```bash
 # Clone the repo
-gh repo clone Davedes83/workspace-restorer ~/.config/omarchy/plugins/davedes.workspace-restorer
+gh repo clone Davedeses/workspace-restorer ~/.config/omarchy/plugins/davedes.workspace-restorer
 
 # Or manually copy to the plugin directory
 cp -r workspace-restorer ~/.config/omarchy/plugins/davedes.workspace-restorer
@@ -42,19 +43,20 @@ omarchy restart shell
 
 ## Usage
 
-1. Click the **󰆞** icon in the top bar to open the panel
+1. Click the bar widget to open the panel
 2. Click **Take Snapshot** to capture your current window layout
 3. Enter a name for the profile (e.g., "coding", "media")
 4. Click a profile name to restore that layout
-5. Click **󰆴** to delete a profile
+5. Click the delete action to remove a profile
 
 ## How It Works
 
-- Snapshots are saved as JSON files in `~/.config/omarchy/workspace-restorer/`
-- Uses `hyprctl -j clients` and `hyprctl -j monitors` for state capture
-- Uses `hyprctl dispatch exec` for window spawning with workspace/monitor rules
-- Windows are spawned with 300ms delays to avoid overwhelming the compositor
-- Layout ratios are applied after a 1-second settling period
+- Snapshots are saved as JSON profiles in `~/.config/omarchy/workspace-restorer/`
+- State is captured via `hyprctl -j clients` and `hyprctl -j monitors`
+- Command line and working directory are read per-process from `/proc/<pid>` (keyed by PID, so window data never misaligns)
+- Restore uses the Omarchy Lua bridge (`hl.dsp.*` dispatchers) via `hyprctl dispatch` to move windows and workspaces, since plain Hyprland command syntax is unavailable through the bridge
+- Missing windows are launched by focusing their target workspace first, then starting the app — so each opens directly where it belongs
+- A detached safety pass re-checks spawned windows and corrects any that ignore the focused workspace, without delaying the restore notification
 
 ## Requirements
 
