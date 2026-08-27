@@ -364,9 +364,28 @@ Panel {
             onStreamFinished: {
                 try {
                     var clients = JSON.parse(text)
-                    var pids = clients.map(function(c) { return c.pid })
+                    var pids = []
+                    var seen = {}
+                    for (var p = 0; p < clients.length; p++) {
+                        if (!seen[clients[p].pid]) {
+                            seen[clients[p].pid] = true
+                            pids.push(clients[p].pid)
+                        }
+                    }
                     snapCmdlinesProc._clients = clients
-                    snapCmdlinesProc.command = ["bash", "-lc", "for p in " + pids.join(" ") + "; do cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' '; echo '|CWD|' readlink /proc/$p/cwd 2>/dev/null; echo; done"]
+                    // Robust per-PID capture. Each PID emits one line of
+                    // "PID<TAB>cmdline<TAB>cwd". Fields are matched BY PID (not
+                    // by array index), so a failed /proc read can never shift
+                    // other windows' data (the old plain-text approach slid on
+                    // any /proc failure). Tabs/newlines inside values are
+                    // collapsed to spaces to keep the TSV format stable.
+                    snapCmdlinesProc.command = ["bash", "-lc",
+                        "pids=\"" + pids.join(" ") + "\"; " +
+                        "for p in $pids; do " +
+                        "  cmd=$(cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' ' | tr '\\t\\n' '  ' | sed 's/ *$//'); " +
+                        "  cwd=$(readlink /proc/$p/cwd 2>/dev/null | tr '\\t\\n' '  '); " +
+                        "  printf '%s\\t%s\\t%s\\n' \"$p\" \"$cmd\" \"$cwd\"; " +
+                        "done"]
                     snapCmdlinesProc.running = true
                 } catch(e) {
                     root.isSnapshotting = false
@@ -382,13 +401,29 @@ Panel {
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: {
-                var lines = text.trim().split("\n")
                 var clients = snapCmdlinesProc._clients
-                for (var i = 0; i < clients.length; i++) {
-                    var raw = (lines[i] || "").trim()
-                    var cwdParts = raw.split("|CWD|")
-                    clients[i]._cmdline = (cwdParts[0] || "").trim()
-                    clients[i]._cwd = (cwdParts[1] || "").trim() || null
+                try {
+                    var infoMap = {}
+                    var lines = (text || "").split("\n")
+                    for (var l = 0; l < lines.length; l++) {
+                        var line = lines[l].trim()
+                        if (!line) continue
+                        var parts = line.split("\t")
+                        if (parts.length >= 1) {
+                            var rec = { pid: parts[0], cmdline: parts[1] || "", cwd: parts[2] || "" }
+                            infoMap[rec.pid] = rec
+                        }
+                    }
+                    for (var i = 0; i < clients.length; i++) {
+                        var info = infoMap[String(clients[i].pid)]
+                        clients[i]._cmdline = (info && info.cmdline) ? info.cmdline.trim() : null
+                        clients[i]._cwd = (info && info.cwd) ? info.cwd.trim() : null
+                    }
+                } catch(e) {
+                    for (var k = 0; k < clients.length; k++) {
+                        clients[k]._cmdline = null
+                        clients[k]._cwd = null
+                    }
                 }
                 snapMonitorsProc._clients = clients
                 snapMonitorsProc.running = true
@@ -413,15 +448,32 @@ Panel {
                     }
 
                     var windows = []
-                    var seenPids = {}
+
+                    // Clean a captured /proc cmdline into a safe relaunch string:
+                    // collapses internal whitespace (single spaces) and trims.
+                    function cleanCmd(raw) {
+                        if (!raw) return null
+                        var v = raw.replace(/\s+/g, " ").trim()
+                        return v.length ? v : null
+                    }
+
+                    // Command cache per PID. Multiple split-screen windows from
+                    // one process (e.g. two nautilus windows sharing a PID)
+                    // must ALL get the same launch command - otherwise a later
+                    // window falls back to className, which can't reopen it.
+                    // For single-instance apps the captured cmdline already
+                    // carries the right flag (e.g. "nautilus --new-window").
+                    var pidCmd = {}
+
                     for (var i = 0; i < clients.length; i++) {
                         var c = clients[i]
                         var monName = monMap[c.monitor] || String(c.monitor)
 
-                        // Multiple windows from same PID share one command line.
-                        // Only the first window keeps it; others fall back to class name.
-                        var isFirstForPid = !seenPids[c.pid]
-                        seenPids[c.pid] = true
+                        var cmd = pidCmd[c.pid]
+                        if (cmd === undefined) {
+                            cmd = cleanCmd(c._cmdline)
+                            pidCmd[c.pid] = cmd === null ? null : cmd
+                        }
 
                         windows.push({
                             "class": c.class,
@@ -432,8 +484,8 @@ Panel {
                             "workspaceId": c.workspace.id,
                             "monitor": monName,
                             "monitorId": c.monitor,
-                            "command": isFirstForPid ? (c._cmdline || null) : null,
-                            "cwd": c._cwd || null,
+                            "command": cmd,
+                            "cwd": c._cwd ? c._cwd.trim() : null,
                             "position": [c.at[0], c.at[1]],
                             "size": [c.size[0], c.size[1]],
                             "splitRatio": c.splitratio,
@@ -639,7 +691,12 @@ Panel {
                     lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fl.size[0] + ", y=" + fl.size[1] + ", window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
                 }
 
-                // Phase 3: Spawn missing windows
+                // Phase 3: Spawn missing windows directly onto their target
+                // workspace. Strategy: focus the target workspace FIRST, then
+                // launch - so each window opens where it belongs instead of
+                // piling onto the currently focused workspace and relying on a
+                // fragile later move. This is far more reliable for both
+                // single and duplicate-class windows.
                 var spawnCount = 0
                 var spawnTargets = []
                 for (var j = 0; j < profile.windows.length; j++) {
@@ -650,17 +707,21 @@ Panel {
                         // For terminal apps, inject saved CWD
                         if (w.cwd && terminalClasses.indexOf(w.class) >= 0) {
                             var cls = w.class.toLowerCase()
-                            if (cls === "kitty") cmd = "kitty --directory " + w.cwd
-                            else if (cls === "foot") cmd = "foot -D " + w.cwd
-                            else if (cls === "alacritty") cmd = "alacritty --working-directory " + w.cwd
+                            if (cls === "kitty") cmd = "kitty --directory '" + w.cwd + "'"
+                            else if (cls === "foot") cmd = "foot -D '" + w.cwd + "'"
+                            else if (cls === "alacritty") cmd = "alacritty --working-directory '" + w.cwd + "'"
                         }
 
-                        var escaped = cmd.replace(/'/g, "'\\''")
+                        // Launch file
                         lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
-                        lines.push("printf '#!/bin/bash\\nexec %s\\n' '" + escaped + "' > $SPATH && chmod +x $SPATH && bash $SPATH &")
-                        // Class-based targeting. GUI apps FORK, so the PID we
-                        // capture via $! is NOT the window's PID — class is the
-                        // only stable identifier across forking.
+                        lines.push("printf '#!/bin/bash\\nexec %s\\n' '" + cmd.replace(/'/g, "'\\''") + "' > $SPATH && chmod +x $SPATH")
+                        // Focus the target workspace so the window lands on it
+                        lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + w.workspace + "'})\" 2>>\"$LOGFILE\" || true")
+                        lines.push("sleep 0.3")
+                        lines.push("bash $SPATH &")
+                        lines.push("echo \"[launch] ws=" + w.workspace + " cmd='$SPATH'\" >> \"$LOGFILE\"")
+
+                        // Track for a class-based safety re-check pass
                         spawnTargets.push({
                             cls: w.class.toLowerCase().replace(/\.desktop$/, ""),
                             ws: String(w.workspace),
@@ -677,7 +738,11 @@ Panel {
                 // Phase 3b: Wait for windows to register, then move each to its
                 // snapshotted workspace by CLASS (fork-stable). Sequential
                 // assignment avoids moving the same window twice when several
-                // profile entries share a class.
+                // profile entries share a class. Now a SAFETY pass only: apps
+                // were launched onto their target workspace via focus-then-
+                // launch in Phase 3, so this catches the rare app that ignores
+                // the focused workspace. Moving an already-correct window to
+                // its own workspace is a harmless no-op.
                 // Exclude pre-existing matched windows via MATCHED_ADDRS
                 if (spawnCount > 0) {
                     lines.push("MATCHED_ADDRS=\"" + matchedAddrs.join(" ") + "\"")
@@ -685,16 +750,20 @@ Panel {
                     lines.push("MOVED_ADDRS=\"\"")
                     for (var s = 0; s < spawnTargets.length; s++) {
                         var t = spawnTargets[s]
-                        var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\\\.desktop$"; "")) == "' + t.cls + '") | .address'
+                        var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\\\.desktop$"; "")) == "' + t.cls + '") | [.address, .workspace.name] | @tsv'
                         // Up to ~15s of polling (30 attempts x 0.5s) - electron
                         // apps (Slack, VS Code, Discord) routinely take longer
                         // than a short budget to register their window.
                         lines.push("ATTEMPT=0")
-                        lines.push("while [ $ATTEMPT -lt 30 ]; do")
-                        lines.push("  ADDRS=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>>\"$LOGFILE\")")
-                        lines.push("  echo \"[move-spawn] attempt=$ATTEMPT cls=" + t.cls + " ws=" + t.ws + " addrs=$ADDRS\" >> \"$LOGFILE\"")
-                        lines.push("  for A in $ADDRS; do")
-                        lines.push("    if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]] && [[ \" $MATCHED_ADDRS \" != *\" $A \"* ]]; then")
+                        lines.push("HANDLED=0")
+                        lines.push("while [ $ATTEMPT -lt 30 ] && [ $HANDLED -eq 0 ]; do")
+                        lines.push("  MATCHES=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>>\"$LOGFILE\")")
+                        lines.push("  echo \"[move-spawn] attempt=$ATTEMPT cls=" + t.cls + " ws=" + t.ws + " matches=$MATCHES\" >> \"$LOGFILE\"")
+                        lines.push("  while IFS=$'\\t' read -r A W; do")
+                        lines.push("    [ -z \"$A\" ] && continue")
+                        lines.push("    if [[ \" $MOVED_ADDRS \" == *\" $A \"* ]] || [[ \" $MATCHED_ADDRS \" == *\" $A \"* ]]; then continue; fi")
+                        lines.push("    MOVED_ADDRS=\"$MOVED_ADDRS $A\"")
+                        lines.push("    if [ \"$W\" != \"" + t.ws + "\" ]; then")
                         lines.push("      hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>>\"$LOGFILE\" || true")
                         if (t.floating) {
                             lines.push("      hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
@@ -704,12 +773,11 @@ Panel {
                         if (t.fullscreen) {
                             lines.push("      hyprctl dispatch \"hl.dsp.window.fullscreen({mode='fullscreen', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
                         }
-                        lines.push("      MOVED_ADDRS=\"$MOVED_ADDRS $A\"")
-                        lines.push("      break 2")
                         lines.push("    fi")
-                        lines.push("  done")
+                        lines.push("    HANDLED=1")
+                        lines.push("  done <<< \"$MATCHES\"")
                         lines.push("  ATTEMPT=$((ATTEMPT+1))")
-                        lines.push("  sleep 0.5")
+                        lines.push("  if [ $HANDLED -eq 0 ]; then sleep 0.5; fi")
                         lines.push("done")
                     }
                 }
