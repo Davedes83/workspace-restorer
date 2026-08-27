@@ -559,13 +559,18 @@ Panel {
                         var e = existing[i]
                         var bestIdx = -1
 
-                        // Match by class, then title for duplicates
+                        // Match by class, then title for duplicates.
+                        // Only claim the first unmatched class hit as a fallback,
+                        // and only overwrite it on an exact title match - otherwise
+                        // repeated scans keep clobbering bestIdx with the LAST
+                        // same-class window instead of a stable pick.
                         for (var p = 0; p < profile.windows.length; p++) {
                             if (matched[p]) continue
                             if (e.class === profile.windows[p].class) {
-                                if (bestIdx === -1 || e.title === profile.windows[p].title) {
+                                if (bestIdx === -1) bestIdx = p
+                                if (e.title === profile.windows[p].title) {
                                     bestIdx = p
-                                    if (e.title === profile.windows[p].title) break
+                                    break
                                 }
                             }
                         }
@@ -576,7 +581,7 @@ Panel {
                             var target = profile.windows[bestIdx]
                             // Move to correct workspace if needed
                             if (String(e.workspace.name) !== String(target.workspace)) {
-                                toMove.push({addr: e.address, ws: target.workspace, cls: e.class})
+                                toMove.push({addr: e.address, ws: target.workspace, cls: e.class, splitRatio: target.splitRatio, fullscreen: target.fullscreen})
                             }
                             // Restore floating state and position
                             if (target.floating) {
@@ -588,9 +593,25 @@ Panel {
                     }
                 }
 
+                // Phase 0: Pin every snapshotted workspace to the monitor it
+                // was on at capture time. Do this BEFORE anything moves into
+                // those workspaces - Hyprland workspaces are global, not
+                // monitor-scoped, so a workspace not yet anchored to a monitor
+                // gets claimed by whichever monitor is focused when the first
+                // window lands in it (multi-monitor setups).
+                var wsToMonitor = {}
+                for (var wm = 0; wm < profile.windows.length; wm++) {
+                    wsToMonitor[profile.windows[wm].workspace] = profile.windows[wm].monitor
+                }
+                for (var wsName in wsToMonitor) {
+                    if (!wsToMonitor[wsName]) continue
+                    lines.push("echo \"[pin] ws=" + wsName + " monitor=" + wsToMonitor[wsName] + "\" >> \"$LOGFILE\"")
+                    lines.push("hyprctl dispatch \"hl.dsp.workspace.move({workspace='" + wsName + "', monitor='" + wsToMonitor[wsName] + "'})\" 2>>\"$LOGFILE\" || true")
+                }
+
                 // Phase 1: Kill unmatched windows
                 for (var k = 0; k < toKill.length; k++) {
-                    lines.push("kill -9 " + toKill[k].pid + " 2>/dev/null || true")
+                    lines.push("kill -9 " + toKill[k].pid + " 2>>\"$LOGFILE\" || true")
                 }
 
                 // Clear browser session caches
@@ -603,15 +624,19 @@ Panel {
                 for (var m = 0; m < toMove.length; m++) {
                     var mv = toMove[m]
                     lines.push("echo \"[move-existing] ws=" + mv.ws + " addr=" + mv.addr + "\" >> \"$LOGFILE\"")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', window='address:" + mv.addr + "', follow=false})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', window='address:" + mv.addr + "', follow=false})\" 2>>\"$LOGFILE\" || true")
+                    // Restore fullscreen for windows captured fullscreen
+                    if (mv.fullscreen) {
+                        lines.push("hyprctl dispatch \"hl.dsp.window.fullscreen({mode='fullscreen', window='address:" + mv.addr + "'})\" 2>>\"$LOGFILE\" || true")
+                    }
                 }
 
                 // Phase 2b: Apply floating state and positioning
                 for (var f = 0; f < toFloat.length; f++) {
                     var fl = toFloat[f]
-                    lines.push("hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:" + fl.addr + "'})\" 2>/dev/null || true")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fl.pos[0] + ", y=" + fl.pos[1] + ", relative=false, window='address:" + fl.addr + "'})\" 2>/dev/null || true")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fl.size[0] + ", y=" + fl.size[1] + ", window='address:" + fl.addr + "'})\" 2>/dev/null || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fl.pos[0] + ", y=" + fl.pos[1] + ", relative=false, window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fl.size[0] + ", y=" + fl.size[1] + ", window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
                 }
 
                 // Phase 3: Spawn missing windows
@@ -636,7 +661,15 @@ Panel {
                         // Class-based targeting. GUI apps FORK, so the PID we
                         // capture via $! is NOT the window's PID — class is the
                         // only stable identifier across forking.
-                        spawnTargets.push({cls: w.class.toLowerCase().replace(/\.desktop$/, ""), ws: String(w.workspace)})
+                        spawnTargets.push({
+                            cls: w.class.toLowerCase().replace(/\.desktop$/, ""),
+                            ws: String(w.workspace),
+                            floating: w.floating,
+                            fullscreen: w.fullscreen,
+                            splitRatio: w.splitRatio,
+                            pos: w.position,
+                            size: w.size
+                        })
                         spawnCount++
                     }
                 }
@@ -648,24 +681,35 @@ Panel {
                 // Exclude pre-existing matched windows via MATCHED_ADDRS
                 if (spawnCount > 0) {
                     lines.push("MATCHED_ADDRS=\"" + matchedAddrs.join(" ") + "\"")
-                    lines.push("sleep 2")
+                    lines.push("sleep 1")
                     lines.push("MOVED_ADDRS=\"\"")
                     for (var s = 0; s < spawnTargets.length; s++) {
                         var t = spawnTargets[s]
                         var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\\\.desktop$"; "")) == "' + t.cls + '") | .address'
+                        // Up to ~15s of polling (30 attempts x 0.5s) - electron
+                        // apps (Slack, VS Code, Discord) routinely take longer
+                        // than a short budget to register their window.
                         lines.push("ATTEMPT=0")
-                        lines.push("while [ $ATTEMPT -lt 10 ]; do")
-                        lines.push("  ADDRS=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>/dev/null)")
+                        lines.push("while [ $ATTEMPT -lt 30 ]; do")
+                        lines.push("  ADDRS=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>>\"$LOGFILE\")")
                         lines.push("  echo \"[move-spawn] attempt=$ATTEMPT cls=" + t.cls + " ws=" + t.ws + " addrs=$ADDRS\" >> \"$LOGFILE\"")
                         lines.push("  for A in $ADDRS; do")
                         lines.push("    if [ -n \"$A\" ] && [[ \" $MOVED_ADDRS \" != *\" $A \"* ]] && [[ \" $MATCHED_ADDRS \" != *\" $A \"* ]]; then")
-                        lines.push("      hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>/dev/null || true")
+                        lines.push("      hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>>\"$LOGFILE\" || true")
+                        if (t.floating) {
+                            lines.push("      hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                            lines.push("      hyprctl dispatch \"hl.dsp.window.move({x=" + t.pos[0] + ", y=" + t.pos[1] + ", relative=false, window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                            lines.push("      hyprctl dispatch \"hl.dsp.window.resize({x=" + t.size[0] + ", y=" + t.size[1] + ", window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                        }
+                        if (t.fullscreen) {
+                            lines.push("      hyprctl dispatch \"hl.dsp.window.fullscreen({mode='fullscreen', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                        }
                         lines.push("      MOVED_ADDRS=\"$MOVED_ADDRS $A\"")
                         lines.push("      break 2")
                         lines.push("    fi")
                         lines.push("  done")
                         lines.push("  ATTEMPT=$((ATTEMPT+1))")
-                        lines.push("  sleep 0.3")
+                        lines.push("  sleep 0.5")
                         lines.push("done")
                     }
                 }
