@@ -40,6 +40,26 @@ Panel {
         Quickshell.execDetached(["notify-send", "-a", "Workspace Restorer", "-i", "preferences-desktop-workspaces", summary, body || ""])
     }
 
+    // Pick a Nerd Font glyph that fits a profile name, falling back to a
+    // generic icon when no keyword matches.
+    function profileIconFor(name) {
+        var n = (name || "").toLowerCase()
+        if (/code|dev|coding|prog|program|project/.test(n)) return "\ue796"            // code
+        if (/work|office|job/.test(n)) return "\uf0c0"                                  // briefcase/users
+        if (/photo|image|picture|gimp|design|edit|art|draw/.test(n)) return "\uf1c5"    // image
+        if (/music|audio|song|media/.test(n)) return "\ue602"                           // music
+        if (/game|play|gaming/.test(n)) return "\uf11b"                                 // gamepad
+        if (/web|internet|www|browser|search/.test(n)) return "\ue700"                  // globe
+        if (/video|movie|film|stream/.test(n)) return "\uf03d"                          // film
+        if (/term|shell|cli|console/.test(n)) return "\uf120"                           // terminal
+        if (/chat|discord|telegram|message|slack/.test(n)) return "\uf086"              // comments
+        if (/doc|note|write|text|paper/.test(n)) return "\uf15c"                        // file-text
+        if (/file|folder|fm|nautilus|browse/.test(n)) return "\uf07b"                   // folder
+        if (/mail|email|gmail/.test(n)) return "\uf0e0"                                 // envelope
+        if (/home|default/.test(n)) return "\uf015"                                     // home
+        return "\uf2db"                                                                 // fingerprint/workspaces default
+    }
+
     function generateDefaultName() {
         var d = new Date()
         var pad = function(n) { return n < 10 ? "0" + n : "" + n }
@@ -175,7 +195,7 @@ Panel {
                             spacing: 6
 
                             Text {
-                                text: "󰋋"
+                                text: root.profileIconFor(modelData)
                                 color: Qt.darker(Color.bar.text, 1.4)
                                 font.pixelSize: 13
                                 anchors.verticalCenter: parent.verticalCenter
