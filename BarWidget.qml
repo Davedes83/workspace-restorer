@@ -735,54 +735,61 @@ Panel {
                     }
                 }
 
-                // Phase 3b: Wait for windows to register, then move each to its
-                // snapshotted workspace by CLASS (fork-stable). Sequential
-                // assignment avoids moving the same window twice when several
-                // profile entries share a class. Now a SAFETY pass only: apps
-                // were launched onto their target workspace via focus-then-
-                // launch in Phase 3, so this catches the rare app that ignores
-                // the focused workspace. Moving an already-correct window to
-                // its own workspace is a harmless no-op.
+                // Phase 3b: Safety re-check pass. Launches in Phase 3 already
+                // place windows on the correct workspace via focus-then-launch,
+                // so this is only a background safety net for the rare app that
+                // ignores the focused workspace. It polls by CLASS (fork-stable)
+                // for up to ~15s per target. It MUST run detached: the restore
+                // notification fires when the main script exits, and we don't
+                // want the notification blocked behind this polling.
                 // Exclude pre-existing matched windows via MATCHED_ADDRS
                 if (spawnCount > 0) {
-                    lines.push("MATCHED_ADDRS=\"" + matchedAddrs.join(" ") + "\"")
-                    lines.push("sleep 1")
-                    lines.push("MOVED_ADDRS=\"\"")
+                    var safety = []
+                    safety.push("#!/bin/bash")
+                    safety.push("LOGFILE=/tmp/wsrestorer-debug.log")
+                    safety.push("MATCHED_ADDRS=\"" + matchedAddrs.join(" ") + "\"")
+                    safety.push("sleep 1")
+                    safety.push("MOVED_ADDRS=\"\"")
                     for (var s = 0; s < spawnTargets.length; s++) {
                         var t = spawnTargets[s]
                         var jqFilter = '.[] | select((.class | ascii_downcase | gsub("\\\\.desktop$"; "")) == "' + t.cls + '") | [.address, .workspace.name] | @tsv'
                         // Up to ~15s of polling (30 attempts x 0.5s) - electron
                         // apps (Slack, VS Code, Discord) routinely take longer
                         // than a short budget to register their window.
-                        lines.push("ATTEMPT=0")
-                        lines.push("HANDLED=0")
-                        lines.push("while [ $ATTEMPT -lt 30 ] && [ $HANDLED -eq 0 ]; do")
-                        lines.push("  MATCHES=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>>\"$LOGFILE\")")
-                        lines.push("  echo \"[move-spawn] attempt=$ATTEMPT cls=" + t.cls + " ws=" + t.ws + " matches=$MATCHES\" >> \"$LOGFILE\"")
-                        lines.push("  while IFS=$'\\t' read -r A W; do")
-                        lines.push("    [ -z \"$A\" ] && continue")
-                        lines.push("    if [[ \" $MOVED_ADDRS \" == *\" $A \"* ]] || [[ \" $MATCHED_ADDRS \" == *\" $A \"* ]]; then continue; fi")
-                        lines.push("    MOVED_ADDRS=\"$MOVED_ADDRS $A\"")
-                        lines.push("    if [ \"$W\" != \"" + t.ws + "\" ]; then")
-                        lines.push("      hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>>\"$LOGFILE\" || true")
+                        safety.push("ATTEMPT=0")
+                        safety.push("HANDLED=0")
+                        safety.push("while [ $ATTEMPT -lt 30 ] && [ $HANDLED -eq 0 ]; do")
+                        safety.push("  MATCHES=$(hyprctl clients -j | jq -r '" + jqFilter + "' 2>>\"$LOGFILE\")")
+                        safety.push("  echo \"[move-spawn] attempt=$ATTEMPT cls=" + t.cls + " ws=" + t.ws + " matches=$MATCHES\" >> \"$LOGFILE\"")
+                        safety.push("  while IFS=$'\\t' read -r A W; do")
+                        safety.push("    [ -z \"$A\" ] && continue")
+                        safety.push("    if [[ \" $MOVED_ADDRS \" == *\" $A \"* ]] || [[ \" $MATCHED_ADDRS \" == *\" $A \"* ]]; then continue; fi")
+                        safety.push("    MOVED_ADDRS=\"$MOVED_ADDRS $A\"")
+                        safety.push("    if [ \"$W\" != \"" + t.ws + "\" ]; then")
+                        safety.push("      hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>>\"$LOGFILE\" || true")
                         if (t.floating) {
-                            lines.push("      hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
-                            lines.push("      hyprctl dispatch \"hl.dsp.window.move({x=" + t.pos[0] + ", y=" + t.pos[1] + ", relative=false, window='address:$A'})\" 2>>\"$LOGFILE\" || true")
-                            lines.push("      hyprctl dispatch \"hl.dsp.window.resize({x=" + t.size[0] + ", y=" + t.size[1] + ", window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                            safety.push("      hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                            safety.push("      hyprctl dispatch \"hl.dsp.window.move({x=" + t.pos[0] + ", y=" + t.pos[1] + ", relative=false, window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                            safety.push("      hyprctl dispatch \"hl.dsp.window.resize({x=" + t.size[0] + ", y=" + t.size[1] + ", window='address:$A'})\" 2>>\"$LOGFILE\" || true")
                         }
                         if (t.fullscreen) {
-                            lines.push("      hyprctl dispatch \"hl.dsp.window.fullscreen({mode='fullscreen', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                            safety.push("      hyprctl dispatch \"hl.dsp.window.fullscreen({mode='fullscreen', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
                         }
-                        lines.push("    fi")
-                        lines.push("    HANDLED=1")
-                        lines.push("  done <<< \"$MATCHES\"")
-                        lines.push("  ATTEMPT=$((ATTEMPT+1))")
-                        lines.push("  if [ $HANDLED -eq 0 ]; then sleep 0.5; fi")
-                        lines.push("done")
+                        safety.push("    fi")
+                        safety.push("    HANDLED=1")
+                        safety.push("  done <<< \"$MATCHES\"")
+                        safety.push("  ATTEMPT=$((ATTEMPT+1))")
+                        safety.push("  if [ $HANDLED -eq 0 ]; then sleep 0.5; fi")
+                        safety.push("done")
                     }
+                    // Write and detach the safety pass so it doesn't delay the
+                    // restore notification. Launch base of the spawn scripts.
+                    lines.push("SAFETY=/tmp/wsrestorer-safety.sh")
+                    lines.push("printf '%s\\n' " + Util.shellQuote(safety.join("\n")) + " > $SAFETY && chmod +x $SAFETY")
+                    lines.push("nohup bash $SAFETY >/dev/null 2>&1 &")
+                    lines.push("disown")
                 }
 
-                lines.push("sleep 0.5")
                 lines.push("rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-move.py 2>/dev/null")
 
                 var totalCount = toMove.length + toFloat.length + spawnCount
