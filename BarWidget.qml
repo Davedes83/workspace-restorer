@@ -40,6 +40,83 @@ Panel {
         Quickshell.execDetached(["notify-send", "-a", "Workspace Restorer", "-i", "preferences-desktop-workspaces", summary, body || ""])
     }
 
+    // Return a valid, safe profile filename (without the .json suffix) or null.
+    // Prevents path traversal: rejects separators, "..", leading dots (hidden
+    // files), control characters, and overly long names so a crafted profile
+    // name can never escape the profile directory on save/read/delete.
+    function sanitizeProfileName(name) {
+        if (typeof name !== "string") return null
+        var n = name.trim()
+        if (n.length === 0 || n.length > 128) return null
+        if (n === "." || n === "..") return null
+        if (n.charAt(0) === ".") return null
+        if (/[\/\\\x00-\x1f]/.test(n)) return null
+        if (!/^[A-Za-z0-9][A-Za-z0-9._ \-]*$/.test(n)) return null
+        return n
+    }
+
+    // Return <name> if it resolves inside the profile directory, else null.
+    // Defense in depth on top of sanitizeProfileName so a corrupted filename
+    // can never read/write/delete outside the profile directory.
+    function validProfilePath(name) {
+        var safe = root.sanitizeProfileName(name)
+        if (safe === null) return null
+        var base = root.profileDir
+        var resolved = base + "/" + safe + ".json"
+        // After sanitizing, the only separators are the ones we add, so a
+        // simplified containment check is sufficient.
+        if (resolved.indexOf(base) !== 0) return null
+        return resolved
+    }
+
+    // Shell-quote a string so a crafted value used in generated shell code
+    // cannot break out into a new command. Use for ALL profile/window-derived
+    // values injected into restore commands.
+    function shellArg(s) {
+        if (s === null || s === undefined) return "''"
+        return "'" + String(s).replace(/'/g, "'\\''") + "'"
+    }
+
+    // Build a safe relaunch command line from an editable profile "command".
+    // The executable token is restricted to a plain path/name (no shell
+    // metacharacters) and every token is shell-quoted, so a crafted profile
+    // cannot smuggle in $(...), backticks, ;, |, redirections, etc. Returns a
+    // ready-to-execute command string, or "" if nothing usable.
+    function sanitizeLaunchCommand(raw, fallbackClass) {
+        var src = raw || (fallbackClass ? fallbackClass.toLowerCase() : "")
+        var tokens = String(src).split(/\s+/).filter(function(t) { return t.length > 0 })
+        if (tokens.length === 0) return ""
+        // First token is the executable: must be a plain name or ./-relative path.
+        if (!/^(\.?\/)?[A-Za-z0-9_][A-Za-z0-9_.+/-]*$/.test(tokens[0])) return ""
+        var out = []
+        for (var i = 0; i < tokens.length; i++) out.push(root.shellArg(tokens[i]))
+        return out.join(" ")
+    }
+
+    // Validate a workspace name from editable metadata. Real workspaces are
+    // short strings of digits (optionally with a name/label), so only accept
+    // a conservative safe set to keep it from injecting shell/jq.
+    function safeWorkspace(ws) {
+        if (typeof ws !== "string") return null
+        if (!/^[_a-z0-9]{1,32}$/i.test(ws)) return null
+        return ws
+    }
+
+    // Validate a Hyprland window class used in jq/shell filters to prevent
+    // injection through editable metadata.
+    function safeClass(cls) {
+        if (typeof cls !== "string") return null
+        if (!/^[A-Za-z0-9_.-]{1,128}$/.test(cls)) return null
+        return cls
+    }
+
+    // Coerce an editable coordinate/size value to a finite number so it can
+    // never smuggle shell metacharacters into a generated dispatch.
+    function numOr(v) {
+        var n = Number(v)
+        return isFinite(n) ? Math.round(n) : 0
+    }
+
     // Pick a Nerd Font glyph that fits a profile name, falling back to a
     // generic icon when no keyword matches.
     function profileIconFor(name) {
@@ -533,7 +610,11 @@ Panel {
 
     function doSave(name) {
         if (!root.pendingSnapshot || name.length === 0) return
-        var path = root.profileDir + "/" + name + ".json"
+        var path = root.validProfilePath(name)
+        if (path === null) {
+            root.lastAction = "Invalid profile name"
+            return
+        }
         var json = JSON.stringify(root.pendingSnapshot, null, 2)
         saveProc.command = ["bash", "-lc",
             "cat > " + Util.shellQuote(path) + " << 'WSRESTORE'\n" + json + "\nWSRESTORE"]
@@ -556,9 +637,14 @@ Panel {
 
     function doRestore(name) {
         if (root.isRestoring) return
+        var path = root.validProfilePath(name)
+        if (path === null) {
+            root.isRestoring = false
+            root.lastAction = "Invalid profile name"
+            return
+        }
         root.isRestoring = true
         root.lastAction = "Restoring..."
-        var path = root.profileDir + "/" + name + ".json"
         restoreProc.command = ["bash", "-lc", "cat " + Util.shellQuote(path)]
         restoreProc.running = true
     }
@@ -604,9 +690,6 @@ Panel {
                 }
                 var profile = checkExistingProc._profile
 
-                // Terminal classes that support --directory / -D / --working-directory
-                var terminalClasses = ["kitty", "foot", "Alacritty", "alacritty", "wezterm"]
-
                 var lines = ["#!/bin/bash"]
                 lines.push("LOGFILE=/tmp/wsrestorer-debug.log")
                 lines.push("echo \"=== restore start $(date) ===\" > $LOGFILE")
@@ -620,7 +703,6 @@ Panel {
                 var matched = []
                 for (var p = 0; p < profile.windows.length; p++) matched[p] = false
 
-                var toKill = []
                 var toMove = []
                 var toFloat = []
                 var matchedAddrs = []
@@ -650,16 +732,18 @@ Panel {
                             matched[bestIdx] = true
                             matchedAddrs.push(e.address)
                             var target = profile.windows[bestIdx]
+                            var tws = root.safeWorkspace(target.workspace)
                             // Move to correct workspace if needed
-                            if (String(e.workspace.name) !== String(target.workspace)) {
-                                toMove.push({addr: e.address, ws: target.workspace, cls: e.class, splitRatio: target.splitRatio, fullscreen: target.fullscreen})
+                            if (tws !== null && String(e.workspace.name) !== String(target.workspace)) {
+                                toMove.push({addr: e.address, ws: tws, cls: e.class, splitRatio: target.splitRatio, fullscreen: target.fullscreen})
                             }
                             // Restore floating state and position
                             if (target.floating) {
                                 toFloat.push({addr: e.address, pos: target.position, size: target.size})
                             }
                         } else {
-                            toKill.push(e)
+                            // Unmatched existing window: left untouched (we no
+                            // longer SIGKILL unmatched windows).
                         }
                     }
                 }
@@ -672,7 +756,11 @@ Panel {
                 // window lands in it (multi-monitor setups).
                 var wsToMonitor = {}
                 for (var wm = 0; wm < profile.windows.length; wm++) {
-                    wsToMonitor[profile.windows[wm].workspace] = profile.windows[wm].monitor
+                    var pws = root.safeWorkspace(profile.windows[wm].workspace)
+                    var pmon = profile.windows[wm].monitor
+                    if (pws !== null && pmon && /^[A-Za-z0-9-]{1,64}$/.test(pmon)) {
+                        wsToMonitor[pws] = pmon
+                    }
                 }
                 for (var wsName in wsToMonitor) {
                     if (!wsToMonitor[wsName]) continue
@@ -680,16 +768,10 @@ Panel {
                     lines.push("hyprctl dispatch \"hl.dsp.workspace.move({workspace='" + wsName + "', monitor='" + wsToMonitor[wsName] + "'})\" 2>>\"$LOGFILE\" || true")
                 }
 
-                // Phase 1: Kill unmatched windows
-                for (var k = 0; k < toKill.length; k++) {
-                    lines.push("kill -9 " + toKill[k].pid + " 2>>\"$LOGFILE\" || true")
-                }
-
-                // Clear browser session caches
-                lines.push("rm -f ~/.config/vivaldi/Default/'Last Session' ~/.config/vivaldi/Default/'Last Tabs' 2>/dev/null || true")
-                lines.push("rm -rf ~/.config/firefox/*/sessionstore-backups/* 2>/dev/null || true")
-                lines.push("rm -f ~/.config/google-chrome/Default/'Current Session' ~/.config/google-chrome/Default/'Current Tabs' 2>/dev/null || true")
-                lines.push("rm -f ~/.config/chromium/Default/'Current Session' ~/.config/chromium/Default/'Current Tabs' 2>/dev/null || true")
+                // Phase 1: Removed. We no longer SIGKILL unmatched windows and
+                // no longer delete browser session caches - both were
+                // destructive and could be driven by a crafted profile. Restore
+                // now only moves matched windows and spawns missing ones.
 
                 // Phase 2: Move matched windows to correct workspaces
                 for (var m = 0; m < toMove.length; m++) {
@@ -705,9 +787,13 @@ Panel {
                 // Phase 2b: Apply floating state and positioning
                 for (var f = 0; f < toFloat.length; f++) {
                     var fl = toFloat[f]
+                    var fx = root.numOr(fl.pos[0])
+                    var fy = root.numOr(fl.pos[1])
+                    var fw = root.numOr(fl.size[0])
+                    var fh = root.numOr(fl.size[1])
                     lines.push("hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fl.pos[0] + ", y=" + fl.pos[1] + ", relative=false, window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fl.size[0] + ", y=" + fl.size[1] + ", window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fx + ", y=" + fy + ", relative=false, window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fw + ", y=" + fh + ", window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
                 }
 
                 // Phase 3: Spawn missing windows directly onto their target
@@ -721,29 +807,35 @@ Panel {
                 for (var j = 0; j < profile.windows.length; j++) {
                     if (!matched[j]) {
                         var w = profile.windows[j]
-                        var cmd = w.command || w.class.toLowerCase()
-
-                        // For terminal apps, inject saved CWD
-                        if (w.cwd && terminalClasses.indexOf(w.class) >= 0) {
-                            var cls = w.class.toLowerCase()
-                            if (cls === "kitty") cmd = "kitty --directory '" + w.cwd + "'"
-                            else if (cls === "foot") cmd = "foot -D '" + w.cwd + "'"
-                            else if (cls === "alacritty") cmd = "alacritty --working-directory '" + w.cwd + "'"
+                        var ws = root.safeWorkspace(w.workspace)
+                        var cls = root.safeClass(w.class)
+                        if (ws === null || cls === null) {
+                            // Ignore entries whose metadata can't be represented
+                            // safely rather than risk injection in generated code.
+                            lines.push("echo \"[launch] skipped unsafe metadata\" >> \"$LOGFILE\"")
+                            continue
                         }
+                        var cmd = root.sanitizeLaunchCommand(w.command, cls)
 
-                        // Launch file
+                        // Launch file: exec the (already shell-quoted) command.
+                        if (cmd.length === 0) {
+                            lines.push("echo \"[launch] no safe command for ws=" + ws + "\" >> \"$LOGFILE\"")
+                        }
+                        var launchline
+                        if (cmd.length > 0) launchline = "exec " + cmd
+                        else launchline = "exit 1"
                         lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
-                        lines.push("printf '#!/bin/bash\\nexec %s\\n' '" + cmd.replace(/'/g, "'\\''") + "' > $SPATH && chmod +x $SPATH")
+                        lines.push("printf '#!/bin/bash\\n%s\\n' " + root.shellArg(launchline) + " > $SPATH && chmod +x $SPATH")
                         // Focus the target workspace so the window lands on it
-                        lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + w.workspace + "'})\" 2>>\"$LOGFILE\" || true")
+                        lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + ws + "'})\" 2>>\"$LOGFILE\" || true")
                         lines.push("sleep 0.3")
                         lines.push("bash $SPATH &")
-                        lines.push("echo \"[launch] ws=" + w.workspace + " cmd='$SPATH'\" >> \"$LOGFILE\"")
+                        lines.push("echo \"[launch] ws=" + ws + " cmd='$SPATH'\" >> \"$LOGFILE\"")
 
                         // Track for a class-based safety re-check pass
                         spawnTargets.push({
-                            cls: w.class.toLowerCase().replace(/\.desktop$/, ""),
-                            ws: String(w.workspace),
+                            cls: cls,
+                            ws: ws,
                             floating: w.floating,
                             fullscreen: w.fullscreen,
                             splitRatio: w.splitRatio,
@@ -787,9 +879,13 @@ Panel {
                         safety.push("    if [ \"$W\" != \"" + t.ws + "\" ]; then")
                         safety.push("      hyprctl dispatch \"hl.dsp.window.move({workspace='" + t.ws + "', window='address:$A', follow=false})\" 2>>\"$LOGFILE\" || true")
                         if (t.floating) {
+                            var sx = root.numOr(t.pos[0])
+                            var sy = root.numOr(t.pos[1])
+                            var sw = root.numOr(t.size[0])
+                            var sh = root.numOr(t.size[1])
                             safety.push("      hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
-                            safety.push("      hyprctl dispatch \"hl.dsp.window.move({x=" + t.pos[0] + ", y=" + t.pos[1] + ", relative=false, window='address:$A'})\" 2>>\"$LOGFILE\" || true")
-                            safety.push("      hyprctl dispatch \"hl.dsp.window.resize({x=" + t.size[0] + ", y=" + t.size[1] + ", window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                            safety.push("      hyprctl dispatch \"hl.dsp.window.move({x=" + sx + ", y=" + sy + ", relative=false, window='address:$A'})\" 2>>\"$LOGFILE\" || true")
+                            safety.push("      hyprctl dispatch \"hl.dsp.window.resize({x=" + sw + ", y=" + sh + ", window='address:$A'})\" 2>>\"$LOGFILE\" || true")
                         }
                         if (t.fullscreen) {
                             safety.push("      hyprctl dispatch \"hl.dsp.window.fullscreen({mode='fullscreen', window='address:$A'})\" 2>>\"$LOGFILE\" || true")
@@ -837,7 +933,11 @@ Panel {
     // --- Delete ---
 
     function doDelete(name) {
-        var path = root.profileDir + "/" + name + ".json"
+        var path = root.validProfilePath(name)
+        if (path === null) {
+            root.lastAction = "Invalid profile name"
+            return
+        }
         delProc.command = ["bash", "-lc", "rm -f " + Util.shellQuote(path)]
         delProc.running = true
     }
