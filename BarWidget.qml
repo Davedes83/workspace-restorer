@@ -691,13 +691,14 @@ Panel {
                 var profile = checkExistingProc._profile
 
                 var lines = ["#!/bin/bash"]
-                lines.push("LOGFILE=/tmp/wsrestorer-debug.log")
-                lines.push("echo \"=== restore start $(date) ===\" > $LOGFILE")
-                // Debug log written by the script itself (Quickshell's
-                // execDetached logging is unavailable). Inspect
-                // /tmp/wsrestorer-debug.log after a restore.
-                lines.push("LOGFILE=/tmp/wsrestorer-debug.log; : > \"$LOGFILE\"")
-                lines.push("echo \"[start] profile_windows=" + profile.windows.length + " existing=" + (existing ? existing.length : 0) + "\" >> \"$LOGFILE\"")
+                // WSROOT is exported by the outer launcher (a private mktemp -d).
+                // Everything this restore writes - log, launch scripts, safety
+                // script - lives inside it, never in shared /tmp. The private dir
+                // is removed on exit unless the detached safety pass owns cleanup.
+                lines.push("LOGFILE=\"$WSROOT/restore.log\"")
+                lines.push("SAFETY_OWNED=0")
+                lines.push("trap 'if [ \"$SAFETY_OWNED\" != \"1\" ]; then rm -rf \"$WSROOT\"; fi' EXIT")
+                lines.push("echo \"[start] wsroot=$WSROOT profile_windows=" + profile.windows.length + " existing=" + (existing ? existing.length : 0) + "\" >> \"$LOGFILE\"")
 
                 // Track which profile windows have been matched
                 var matched = []
@@ -824,12 +825,12 @@ Panel {
                         var launchline
                         if (cmd.length > 0) launchline = "exec " + cmd
                         else launchline = "exit 1"
-                        lines.push("SPATH=/tmp/wsrestorer-spawn-" + j + ".sh")
-                        lines.push("printf '#!/bin/bash\\n%s\\n' " + root.shellArg(launchline) + " > $SPATH && chmod +x $SPATH")
+                        lines.push("SPATH=\"$WSROOT/spawn-" + j + ".sh\"")
+                        lines.push("printf '#!/bin/bash\\n%s\\n' " + root.shellArg(launchline) + " > \"$SPATH\" && chmod 700 \"$SPATH\"")
                         // Focus the target workspace so the window lands on it
                         lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + ws + "'})\" 2>>\"$LOGFILE\" || true")
                         lines.push("sleep 0.3")
-                        lines.push("bash $SPATH &")
+                        lines.push("bash \"$SPATH\" &")
                         lines.push("echo \"[launch] ws=" + ws + " cmd='$SPATH'\" >> \"$LOGFILE\"")
 
                         // Track for a class-based safety re-check pass
@@ -857,7 +858,11 @@ Panel {
                 if (spawnCount > 0) {
                     var safety = []
                     safety.push("#!/bin/bash")
-                    safety.push("LOGFILE=/tmp/wsrestorer-debug.log")
+                    safety.push("LOGFILE=\"$WSROOT/restore.log\"")
+                    // The safety pass is the last consumer of the private WSROOT,
+                    // so it owns cleanup - removes the whole private dir (only
+                    // our own files) when it finishes, with a trap for safety.
+                    safety.push("trap 'rm -rf \"$WSROOT\"' EXIT")
                     safety.push("MATCHED_ADDRS=\"" + matchedAddrs.join(" ") + "\"")
                     safety.push("sleep 1")
                     safety.push("MOVED_ADDRS=\"\"")
@@ -898,22 +903,35 @@ Panel {
                         safety.push("done")
                     }
                     // Write and detach the safety pass so it doesn't delay the
-                    // restore notification. Launch base of the spawn scripts.
-                    lines.push("SAFETY=/tmp/wsrestorer-safety.sh")
-                    lines.push("printf '%s\\n' " + Util.shellQuote(safety.join("\n")) + " > $SAFETY && chmod +x $SAFETY")
-                    lines.push("nohup bash $SAFETY >/dev/null 2>&1 &")
+                    // restore notification. The script and everything it uses
+                    // live in the private $WSROOT (never shared /tmp). Hand
+                    // cleanup of $WSROOT over to the safety pass, which removes
+                    // the private dir when it finishes.
+                    lines.push("SAFETY_OWNED=1")
+                    lines.push("SAFETY=\"$WSROOT/safety.sh\"")
+                    lines.push("printf '%s\\n' " + Util.shellQuote(safety.join("\n")) + " > \"$SAFETY\" && chmod 700 \"$SAFETY\"")
+                    lines.push("nohup bash \"$SAFETY\" >/dev/null 2>&1 &")
                     lines.push("disown")
                 }
-
-                lines.push("rm -f /tmp/wsrestorer-spawn-*.sh /tmp/wsrestorer-move.py 2>/dev/null")
 
                 var totalCount = toMove.length + toFloat.length + spawnCount
 
                 var scriptContent = lines.join("\n")
-                var scriptPath = "/tmp/wsrestorer-restore.sh"
                 masterRestoreProc._count = totalCount
+                // Run everything from a private, freshly-created temp directory
+                // (mktemp -d, 0700 with umask 077) instead of predictable shared
+                // /tmp pathnames. This avoids symlink/clobber and write/execute
+                // races on restore.sh, spawn-*.sh, safety.sh and the log. The
+                // restore.sh path is never a replaceable shared name, and the
+                // safety pass cleans the private dir up when it finishes.
                 masterRestoreProc.command = ["bash", "-c",
-                    "printf '%s\\n' " + Util.shellQuote(scriptContent) + " > " + scriptPath + " && chmod +x " + scriptPath + " && bash " + scriptPath]
+                    "set -o pipefail; " +
+                    "WSROOT=$(mktemp -d) || exit 1; " +
+                    "chmod 700 \"$WSROOT\" || exit 1; " +
+                    "umask 077; " +
+                    "export WSROOT; " +
+                    "printf '%s\\n' " + Util.shellQuote(scriptContent) + " > \"$WSROOT/restore.sh\" && " +
+                    "bash \"$WSROOT/restore.sh\""]
                 masterRestoreProc.running = true
             }
         }
