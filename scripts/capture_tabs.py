@@ -133,26 +133,43 @@ def _find_active_firefox_profile(profile_dir):
     return profile_dir, False
 
 
+def _firefox_tabs_from_session(data):
+    tabs = []
+    seen = set()
+    for win in data.get("windows", []):
+        for tab in win.get("tabs", []):
+            entries = tab.get("entries", [])
+            idx = tab.get("index", 1) - 1
+            entry = entries[idx] if 0 <= idx < len(entries) else None
+            if entry and entry.get("url") and entry["url"] not in seen:
+                seen.add(entry["url"])
+                tabs.append({"url": entry["url"], "title": entry.get("title", "")})
+    return tabs
+
+
 def _read_firefox_tabs(profile_dir):
+    # Firefox flushes `recovery.jsonlz4` on a short timer, not on every tab
+    # change, so an immediate snapshot can see a stale/sparse file that lags
+    # the live tabs. Decode every decodable session-store variant and keep the
+    # one with the most tabs as the most complete view of the added/commented
+    # ones, so capture is not stuck on whichever file was flushed most recently.
+    best = None
     for rel in ("recovery.jsonlz4", "recovery.baklz4", "previous.jsonlz4"):
         path = os.path.join(profile_dir, "sessionstore-backups", rel)
         if not os.path.isfile(path):
             continue
         try:
             raw = _decode_mozlz4(path)
-            data = json.loads(raw)
+            tabs = _firefox_tabs_from_session(json.loads(raw))
         except Exception as exc:  # noqa: BLE001
             continue
-        tabs = []
-        for win in data.get("windows", []):
-            for tab in win.get("tabs", []):
-                entries = tab.get("entries", [])
-                idx = tab.get("index", 1) - 1
-                entry = entries[idx] if 0 <= idx < len(entries) else None
-                if entry and entry.get("url"):
-                    tabs.append({"url": entry["url"], "title": entry.get("title", "")})
-        return {"ok": True, "tabs": tabs}
-    return None
+        if not tabs:
+            continue
+        if best is None or len(tabs) > len(best):
+            best = tabs
+    if best is None:
+        return None
+    return {"ok": True, "tabs": best}
 
 
 def capture_firefox(profile_dir):

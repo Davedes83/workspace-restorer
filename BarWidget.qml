@@ -157,6 +157,29 @@ Panel {
         return base + " --new-window " + urls
     }
 
+    // Returns an array of shell commands to run in sequence (one per step) to
+    // reopen a browser window's tabs. Mirrors restoreLogic.mjs. For Firefox we
+    // must not pass all URLs to a single `--new-window`, which an already-running
+    // instance turns into one window per URL — instead open one new window with
+    // the first URL and add the rest as new tabs in that window.
+    function buildBrowserLaunchCommands(pureCommand, cls, tabs) {
+        var cmd = pureCommand || ""
+        var type = root.browserTypeForClass(cls)
+        if (!type) return cmd.length > 0 ? [cmd] : []
+        var urls = root.buildTabUrls(tabs)
+        if (urls.length === 0) return cmd.length > 0 ? [cmd] : []
+        var base = cmd.length > 0 ? cmd : root.shellArg(cls.toLowerCase())
+        var marker = base.indexOf(" --new-window ")
+        if (marker !== -1) base = base.slice(0, marker)
+        if (type === "firefox") {
+            var parts = urls.split(" ")
+            var out = [base + " --new-window " + parts[0]]
+            for (var i = 1; i < parts.length; i++) out.push(base + " --new-tab " + parts[i])
+            return out
+        }
+        return [base + " --new-window " + urls]
+    }
+
     // Validate a workspace name from editable metadata. Real workspaces are
     // short strings of digits (optionally with a name/label), so only accept
     // a conservative safe set to keep it from injecting shell/jq.
@@ -1069,19 +1092,26 @@ Panel {
                     var cmd = root.sanitizeLaunchCommand(w.command, cls)
 
                     // For browser windows with captured tabs, append the page
-                    // URLs (validated, shell-quoted) via --new-window so a
-                    // restored snapshot reopens the browser's tabs in place.
+                    // For browser windows with captured tabs, produce the launch
+                    // commands (which may be several, e.g. Firefox opens a single
+                    // new window then adds tabs) that reopen the pages in place.
+                    var cmds
                     if (w.browser && (w.tabs && w.tabs.length > 0)) {
-                        cmd = root.buildBrowserLaunchCommand(cmd, cls, w.tabs)
+                        cmds = root.buildBrowserLaunchCommands(cmd, cls, w.tabs)
+                    } else {
+                        cmds = cmd.length > 0 ? [cmd] : []
                     }
 
-                    // Launch file: exec the (already shell-quoted) command.
-                    if (cmd.length === 0) {
+                    // Launch file: one (already shell-quoted) exec line per step.
+                    if (cmds.length === 0) {
                         lines.push("echo \"[launch] no safe command for ws=" + ws + "\" >> \"$LOGFILE\"")
                     }
-                    var launchline
-                    if (cmd.length > 0) launchline = "exec " + cmd
-                    else launchline = "exit 1"
+                    var steps = []
+                    for (var k = 0; k < cmds.length; k++) {
+                        steps.push(k === 0 ? "exec " + cmds[k] : cmds[k])
+                        if (k < cmds.length - 1) steps.push("sleep 0.4")
+                    }
+                    var launchline = steps.length > 0 ? steps.join("\n") : "exit 1"
                     lines.push("SPATH=\"$WSROOT/spawn-" + j + ".sh\"")
                     lines.push("printf '#!/bin/bash\\n%s\\n' " + root.shellArg(launchline) + " > \"$SPATH\" && chmod 700 \"$SPATH\"")
                     // Focus the target workspace so the window lands on it

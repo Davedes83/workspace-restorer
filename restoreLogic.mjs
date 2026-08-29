@@ -161,3 +161,28 @@ export function buildBrowserLaunchCommand(pureCommand, cls, tabs) {
     return base + " --new-window " + urls
 }
 
+// Like buildBrowserLaunchCommand but returns an array of shell commands to run
+// in sequence (one launch step per element), which the restore script executes
+// line by line. For Chromium-family browsers a single `--new-window url...`
+// opens one window with all tabs. For Firefox, `--new-window u1 u2` gets
+// forwarded to the already-running instance and opens ONE window per URL, so we
+// force a single new window with the first URL and add the rest as new tabs in
+// that same window instead.
+export function buildBrowserLaunchCommands(pureCommand, cls, tabs) {
+    var cmd = pureCommand || ""
+    var type = browserTypeForClass(cls)
+    if (!type) return cmd ? [cmd] : []
+    var urls = buildTabUrls(tabs)
+    if (urls.length === 0) return cmd ? [cmd] : []
+    var base = cmd.length > 0 ? cmd : "'" + cls.toLowerCase() + "'"
+    var marker = base.indexOf(" --new-window ")
+    if (marker !== -1) base = base.slice(0, marker)
+    if (type === "firefox") {
+        var parts = urls.split(" ")
+        var out = [base + " --new-window " + parts[0]]
+        for (var i = 1; i < parts.length; i++) out.push(base + " --new-tab " + parts[i])
+        return out
+    }
+    return [base + " --new-window " + urls]
+}
+

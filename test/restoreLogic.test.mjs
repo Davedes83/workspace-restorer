@@ -16,6 +16,7 @@ import {
     safeUrl,
     buildTabUrls,
     buildBrowserLaunchCommand,
+    buildBrowserLaunchCommands,
 } from "../restoreLogic.mjs"
 
 const DIR = "/home/user/.config/omarchy/workspace-restorer"
@@ -313,4 +314,39 @@ test("buildBrowserLaunchCommand strips a stale --new-window tail to avoid duplic
         buildBrowserLaunchCommand(polluted, "vivaldi-stable", tabs),
         "'/opt/vivaldi/vivaldi-bin' --new-window 'https://github.com/dashboard' 'https://www.reddit.com/'"
     )
+})
+
+// --- buildBrowserLaunchCommands ---
+
+test("buildBrowserLaunchCommands gives Chromium one --new-window with all URLs", () => {
+    const tabs = [{ url: "https://github.com/" }, { url: "https://www.reddit.com/" }]
+    assert.deepEqual(
+        buildBrowserLaunchCommands("'google-chrome'", "Google-chrome", tabs),
+        ["'google-chrome' --new-window 'https://github.com/' 'https://www.reddit.com/'"]
+    )
+})
+
+test("buildBrowserLaunchCommands keeps a single tab in one --new-window for Chromium", () => {
+    const tabs = [{ url: "https://github.com/" }]
+    assert.deepEqual(
+        buildBrowserLaunchCommands("'google-chrome'", "Google-chrome", tabs),
+        ["'google-chrome' --new-window 'https://github.com/'"]
+    )
+})
+
+test("buildBrowserLaunchCommands opens one Firefox window then adds tabs (not one window per URL)", () => {
+    const tabs = [{ url: "https://github.com/" }, { url: "https://www.reddit.com/" }]
+    assert.deepEqual(
+        buildBrowserLaunchCommands("'firefox'", "firefox", tabs),
+        [
+            "'firefox' --new-window 'https://github.com/'",
+            "'firefox' --new-tab 'https://www.reddit.com/'",
+        ]
+    )
+})
+
+test("buildBrowserLaunchCommands returns base command unchanged for non-browsers or no tabs", () => {
+    assert.deepEqual(buildBrowserLaunchCommands("'nautilus'", "nautilus", [{ url: "https://x.com" }]), ["'nautilus'"])
+    assert.deepEqual(buildBrowserLaunchCommands("'firefox'", "firefox", []), ["'firefox'"])
+    assert.deepEqual(buildBrowserLaunchCommands("", "nautilus", [{ url: "https://x.com" }]), [])
 })
