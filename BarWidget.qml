@@ -149,6 +149,11 @@ Panel {
         var urls = root.buildTabUrls(tabs)
         if (urls.length === 0) return cmd
         var base = cmd.length > 0 ? cmd : root.shellArg(cls.toLowerCase())
+        // Strip a stale `--new-window <urls>` tail left over from a previous
+        // restore (the captured /proc cmdline still carries it), otherwise
+        // we'd append another URL list and reopen duplicates.
+        var marker = base.indexOf(" --new-window ")
+        if (marker !== -1) base = base.slice(0, marker)
         return base + " --new-window " + urls
     }
 

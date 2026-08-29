@@ -304,3 +304,13 @@ test("buildBrowserLaunchCommand returns base command unchanged when no tabs or n
     assert.equal(buildBrowserLaunchCommand("'firefox'", "firefox", []), "'firefox'")
     assert.equal(buildBrowserLaunchCommand("'firefox'", "firefox", null), "'firefox'")
 })
+
+test("buildBrowserLaunchCommand strips a stale --new-window tail to avoid duplicate restore", () => {
+    // The captured /proc cmdline already carries URLs from a previous restore.
+    const polluted = "'/opt/vivaldi/vivaldi-bin' --new-window 'https://github.com/dashboard' 'https://www.reddit.com/'"
+    const tabs = [{ url: "https://github.com/dashboard" }, { url: "https://www.reddit.com/" }]
+    assert.equal(
+        buildBrowserLaunchCommand(polluted, "vivaldi-stable", tabs),
+        "'/opt/vivaldi/vivaldi-bin' --new-window 'https://github.com/dashboard' 'https://www.reddit.com/'"
+    )
+})

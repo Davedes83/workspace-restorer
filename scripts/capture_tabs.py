@@ -74,75 +74,68 @@ def _decode_mozlz4(path):
     raise RuntimeError("no lz4 decoder available (install python3-lz4 or lz4json)")
 
 
-def _resolve_firefox_profile_dir(profile_dir):
+def _firefox_base_dirs(hint):
+    """Return a list of candidate Firefox base directories to inspect.
+
+    Firefox may keep its profiles under ``~/.mozilla/firefox`` (traditional)
+    or ``$XDG_CONFIG_HOME/mozilla/firefox`` (e.g. ``~/.config/mozilla/firefox``,
+    used by many distributions/installs). ``hint`` is whatever path the
+    window's command line suggested. We return that plus the standard locations
+    (deduplicated, in priority order), so capture finds the active profile
+    regardless of which install layout / hint we were handed.
+    """
+    home = os.path.expanduser("~")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    bases = [
+        os.path.expanduser(hint),
+        os.path.join(home, ".mozilla", "firefox"),
+        os.path.join(xdg, "mozilla", "firefox"),
+    ]
+    return list(dict.fromkeys(b for b in bases if b))
+
+
+def _find_active_firefox_profile(profile_dir):
     """Resolve the concrete Firefox profile directory to inspect.
 
-    ``profile_dir`` may be either a specific profile directory (containing
-    prefs.js / sessionstore-backups) or the parent ``~/.mozilla/firefox``
-    directory. In the latter case we pick the default profile from
-    profiles.ini, falling back to the most recently modified profile dir.
+    ``profile_dir`` may be a specific profile directory (has sessionstore /
+    prefs.js), a Firefox base directory (has profiles.ini), or a stale hint.
+    We always search the candidate base dirs for the profile whose
+    ``sessionstore-backups/recovery.jsonlz4`` is newest — that is the profile
+    Firefox is actually running from — so this is robust to profiles.ini
+    format differences (section-level ``Default=1`` vs ``[Install...]``
+    Default=) and to XDG vs traditional base locations.
     """
-    # Fast path: we were already given a real profile directory.
-    if os.path.isfile(os.path.join(profile_dir, "prefs.js")) or os.path.isdir(
-        os.path.join(profile_dir, "sessionstore-backups")
-    ):
-        return profile_dir
+    # Fast path: we were already given a real, active profile directory.
+    for base in _firefox_base_dirs(profile_dir):
+        probe = base
+        if (os.path.isfile(os.path.join(probe, "prefs.js"))
+                or os.path.isfile(os.path.join(probe, "sessionstore-backups", "recovery.jsonlz4"))):
+            return probe, True
 
-    # Treat it as the firefox base dir: parse profiles.ini for the default.
-    ini = os.path.join(profile_dir, "profiles.ini")
-    profiles = []  # (is_default, path)
-    section = None
-    if os.path.isfile(ini):
-        for line in open(ini, "r", encoding="utf-8", errors="replace"):
-            line = line.strip()
-            if line.startswith("[") and line.endswith("]"):
-                section = line[1:-1].lower()
+    best = None
+    best_mtime = -1
+    for base in _firefox_base_dirs(profile_dir):
+        if not os.path.isdir(base):
+            continue
+        for name in sorted(os.listdir(base)):
+            prof = os.path.join(base, name)
+            sess = os.path.join(prof, "sessionstore-backups", "recovery.jsonlz4")
+            if not os.path.isfile(sess):
                 continue
-            if section and line.startswith("path="):
-                p = line[5:].strip()
-                if p:
-                    profiles.append((False, p))
-            elif section and line.startswith("default=") and line[8:].strip() == "1":
-                if profiles:
-                    profiles[-1] = (True, profiles[-1][1])
-
-    default = None
-    for is_default, p in profiles:
-        if is_default:
-            default = os.path.expanduser(os.path.join(profile_dir, p))
-            break
-    if default and (os.path.isfile(os.path.join(default, "prefs.js"))
-                    or os.path.isdir(os.path.join(default, "sessionstore-backups"))):
-        return default
-
-    # Fallback: prefer the default* dir, else the most recently modified.
-    import glob as _glob
-    cands = _glob.glob(os.path.join(profile_dir, "*.default*"))
-    if not cands:
-        cands = [
-            os.path.join(profile_dir, name)
-            for name in os.listdir(profile_dir)
-            if os.path.isdir(os.path.join(profile_dir, name))
-        ]
-    if not cands:
-        return profile_dir
-    cands = [c for c in cands if os.path.isdir(c)]
-    if not cands:
-        return profile_dir
-    defkey = [c for c in cands if ".default" in c]
-    pool = defkey or cands
-    return max(pool, key=os.path.getmtime)
+            try:
+                mt = os.path.getmtime(sess)
+            except OSError:
+                continue
+            if mt > best_mtime:
+                best, best_mtime = prof, mt
+    if best:
+        return best, False
+    return profile_dir, False
 
 
-def capture_firefox(profile_dir):
-    profile_dir = _resolve_firefox_profile_dir(profile_dir)
-    candidates = [
-        "sessionstore-backups/recovery.jsonlz4",
-        "sessionstore-backups/recovery.baklz4",
-        "sessionstore-backups/previous.jsonlz4",
-    ]
-    for rel in candidates:
-        path = os.path.join(profile_dir, rel)
+def _read_firefox_tabs(profile_dir):
+    for rel in ("recovery.jsonlz4", "recovery.baklz4", "previous.jsonlz4"):
+        path = os.path.join(profile_dir, "sessionstore-backups", rel)
         if not os.path.isfile(path):
             continue
         try:
@@ -159,6 +152,26 @@ def capture_firefox(profile_dir):
                 if entry and entry.get("url"):
                     tabs.append({"url": entry["url"], "title": entry.get("title", "")})
         return {"ok": True, "tabs": tabs}
+    return None
+
+
+def capture_firefox(profile_dir):
+    resolved, _ = _find_active_firefox_profile(profile_dir)
+    result = _read_firefox_tabs(resolved)
+    if result is not None:
+        return result
+    # The profile dir may not be the active one; fall back to checking each
+    # candidate base dir's profiles for a readable session backup.
+    for base in _firefox_base_dirs(profile_dir):
+        if not os.path.isdir(base):
+            continue
+        for name in sorted(os.listdir(base)):
+            prof = os.path.join(base, name)
+            if not os.path.isdir(prof):
+                continue
+            result = _read_firefox_tabs(prof)
+            if result is not None:
+                return result
     return {"ok": False, "error": "no firefox session backup found"}
 
 
