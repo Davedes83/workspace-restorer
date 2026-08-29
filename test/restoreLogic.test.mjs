@@ -12,6 +12,10 @@ import {
     generateDefaultName,
     cleanCmd,
     buildMonitorMap,
+    browserTypeForClass,
+    safeUrl,
+    buildTabUrls,
+    buildBrowserLaunchCommand,
 } from "../restoreLogic.mjs"
 
 const DIR = "/home/user/.config/omarchy/workspace-restorer"
@@ -213,4 +217,90 @@ test("cleanCmd returns null for empty/invalid", () => {
 test("buildMonitorMap maps monitor id to name", () => {
     const monitors = [{ id: 0, name: "DP-1" }, { id: 1, name: "HDMI-A-1" }]
     assert.deepEqual(buildMonitorMap(monitors), { 0: "DP-1", 1: "HDMI-A-1" })
+})
+
+// --- browserTypeForClass ---
+
+test("browserTypeForClass detects Firefox family", () => {
+    for (const cls of ["firefox", "Firefox", "librewolf", "floorp", "zen", "tor-browser", "firefox-esr"]) {
+        assert.equal(browserTypeForClass(cls), "firefox", `should be firefox: ${cls}`)
+    }
+})
+
+test("browserTypeForClass detects Chromium family", () => {
+    for (const cls of ["google-chrome", "chromium", "brave-browser", "vivaldi", "microsoft-edge", "Google-chrome"]) {
+        assert.equal(browserTypeForClass(cls), "chromium", `should be chromium: ${cls}`)
+    }
+})
+
+test("browserTypeForClass rejects non-browsers", () => {
+    for (const cls of ["nautilus", "kitty", "code", "", null, "slack"]) {
+        assert.equal(browserTypeForClass(cls), null, `should be null: ${cls}`)
+    }
+})
+
+// --- safeUrl ---
+
+test("safeUrl accepts http/https URLs", () => {
+    assert.equal(safeUrl("https://github.com/foo?q=1#x"), "https://github.com/foo?q=1#x")
+    assert.equal(safeUrl("http://example.com/a b"), null) // space rejected
+})
+
+test("safeUrl accepts safe special schemes", () => {
+    assert.equal(safeUrl("about:blank"), "about:blank")
+    assert.equal(safeUrl("about:newtab"), "about:newtab")
+    assert.equal(safeUrl("file:///home/user/x"), "file:///home/user/x")
+    assert.equal(safeUrl("chrome://settings"), "chrome://settings")
+    assert.equal(safeUrl("moz-extension://abc/"), "moz-extension://abc/")
+})
+
+test("safeUrl rejects shell metacharacters and garbage", () => {
+    for (const url of ["https://x.com/';rm -rf /", "https://x.com/$(x)", "https://x.com/`x`", "https://x.com/a|b", "https://x.com/a&b", "https://x.com/a;b", "https://x.com/a\nb", "not-a-url", "", null, "https://x.com/ x"]) {
+        assert.equal(safeUrl(url), null, `should reject: ${url}`)
+    }
+    assert.equal(safeUrl("ftp://x.com"), "ftp://x.com")
+})
+
+// --- buildTabUrls ---
+
+test("buildTabUrls quotes valid URLs and skips blanks", () => {
+    const tabs = [
+        { url: "https://github.com/" },
+        { url: "about:newtab" },
+        { url: null },
+        { url: "https://x.com/'drop" },
+        { url: "https://news.ycombinator.com/" },
+    ]
+    assert.equal(buildTabUrls(tabs), "'https://github.com/' 'https://news.ycombinator.com/'")
+})
+
+test("buildTabUrls returns empty for no usable tabs", () => {
+    assert.equal(buildTabUrls([]), "")
+    assert.equal(buildTabUrls(null), "")
+    assert.equal(buildTabUrls([{ url: "about:newtab" }]), "")
+    assert.equal(buildTabUrls([{ url: "https://x.com/;ls" }]), "")
+})
+
+// --- buildBrowserLaunchCommand ---
+
+test("buildBrowserLaunchCommand appends --new-window + URLs", () => {
+    const tabs = [{ url: "https://github.com/" }, { url: "https://news.ycombinator.com/" }]
+    assert.equal(
+        buildBrowserLaunchCommand("'firefox'", "firefox", tabs),
+        "'firefox' --new-window 'https://github.com/' 'https://news.ycombinator.com/'"
+    )
+})
+
+test("buildBrowserLaunchCommand falls back to class name when no base command", () => {
+    const tabs = [{ url: "https://example.com/" }]
+    assert.equal(
+        buildBrowserLaunchCommand("", "Google-chrome", tabs),
+        "'google-chrome' --new-window 'https://example.com/'"
+    )
+})
+
+test("buildBrowserLaunchCommand returns base command unchanged when no tabs or non-browser", () => {
+    assert.equal(buildBrowserLaunchCommand("'nautilus'", "nautilus", [{ url: "https://x.com" }]), "'nautilus'")
+    assert.equal(buildBrowserLaunchCommand("'firefox'", "firefox", []), "'firefox'")
+    assert.equal(buildBrowserLaunchCommand("'firefox'", "firefox", null), "'firefox'")
 })

@@ -102,6 +102,55 @@ Panel {
         return out.join(" ")
     }
 
+    // Validate a tab URL before it is injected into a launch command. Accepts
+    // http/https and a conservative set of special schemes, and rejects anything
+    // with shell metacharacters or whitespace so a crafted/compromised URL can
+    // never break out of the generated bash. Mirrors restoreLogic.mjs safeUrl().
+    function safeUrl(url) {
+        if (typeof url !== "string") return null
+        var u = url.trim()
+        if (u.length === 0 || u.length > 4096) return null
+        if (!/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(u)) {
+            if (/^(about|chrome|edge|brave|moz-extension|file|view-source|chrome-extension):/i.test(u)) {
+                if (/[\s`$;|&<>"'\\\x00-\x1f]/.test(u)) return null
+                return u
+            }
+            return null
+        }
+        if (/[\s`$;|&<>"'\\\x00-\x1f]/.test(u)) return null
+        return u
+    }
+
+    // Build a shell-quoted list of validated, non-blank tab URLs from a window's
+    // captured tabs array. Returns "" if there are no usable tabs.
+    function buildTabUrls(tabs) {
+        if (!Array.isArray(tabs)) return ""
+        var out = []
+        for (var i = 0; i < tabs.length; i++) {
+            var tab = tabs[i]
+            if (!tab || typeof tab.url !== "string") continue
+            var url = root.safeUrl(tab.url)
+            if (url === null) continue
+            var lower = url.toLowerCase()
+            if (lower === "about:newtab" || lower === "about:blank" || lower === "") continue
+            out.push(root.shellArg(url))
+        }
+        return out.join(" ")
+    }
+
+    // Append tab URLs (with --new-window) to a browser's relaunch command so a
+    // restored snapshot reopens a browser's pages. `pureCommand` is the already
+    // shell-quoted launch command from the profile. Mirrors restoreLogic.mjs.
+    function buildBrowserLaunchCommand(pureCommand, cls, tabs) {
+        var cmd = pureCommand || ""
+        var type = root.browserTypeForClass(cls)
+        if (!type) return cmd
+        var urls = root.buildTabUrls(tabs)
+        if (urls.length === 0) return cmd
+        var base = cmd.length > 0 ? cmd : root.shellArg(cls.toLowerCase())
+        return base + " --new-window " + urls
+    }
+
     // Validate a workspace name from editable metadata. Real workspaces are
     // short strings of digits (optionally with a name/label), so only accept
     // a conservative safe set to keep it from injecting shell/jq.
@@ -177,6 +226,48 @@ Panel {
 
     function resolveExe(className) {
         return className.toLowerCase()
+    }
+
+    // Return the browser engine for a window class: "firefox", "chromium", or
+    // null if the window isn't a supported browser. Mirrors the pure helper in
+    // restoreLogic.mjs (kept in sync for the QML-side detection).
+    function browserTypeForClass(cls) {
+        if (typeof cls !== "string" || cls.length === 0) return null
+        if (/^(firefox|librewolf|waterfox|floorp|tor-browser|zen|palemoon|seamonkey)(\.|-|$)/i.test(cls)) return "firefox"
+        if (/(chrom|brave|vivaldi|edge|opera|electron)/i.test(cls)) return "chromium"
+        return null
+    }
+
+    // Resolve the profile/user-data directory for a browser window from its
+    // captured /proc cmdline. For Chromium this is the --user-data-dir value
+    // (or the default ~/.config/<app>); for Firefox the -P/-profile path or the
+    // default ~/.mozilla/firefox/<default-profile>. Returns a safe-ish absolute
+    // path or null. Never used in shell generation - only to locate the
+    // session/debug files for tab capture.
+    function resolveBrowserProfile(btype, cmdline) {
+        var home = Quickshell.env("HOME")
+        var cmd = String(cmdline || "")
+        var m
+        if (btype === "chromium") {
+            m = /--user-data-dir=("?)([^"\s]+)\1/.exec(cmd)
+            if (m) return m[2]
+            if (/google-chrome/i.test(cmd)) return home + "/.config/google-chrome"
+            if (/chromium/i.test(cmd)) return home + "/.config/chromium"
+            if (/brave/i.test(cmd)) return home + "/.config/BraveSoftware/Brave-Browser"
+            if (/vivaldi/i.test(cmd)) return home + "/.config/vivaldi"
+            if (/edge/i.test(cmd)) return home + "/.config/microsoft-edge"
+            if (/opera/i.test(cmd)) return home + "/.config/opera"
+            return null
+        } else if (btype === "firefox") {
+            m = /--profile(=|\s+)(\S+)/.exec(cmd)
+            if (m) return m[2]
+            m = /-P\s+(\S+)/.exec(cmd)
+            if (m) return home + "/.mozilla/firefox/" + m[1]
+            // Default: pick the default* profile dir if present.
+            var base = home + "/.mozilla/firefox"
+            return base
+        }
+        return null
     }
 
     // --- Bar Button ---
@@ -583,6 +674,14 @@ Panel {
                             pidCmd[c.pid] = cmd === null ? null : cmd
                         }
 
+                        // Browser detection: mark the window so the tab-capture
+                        // pass (snapTabsProc) can enrich it later, and resolve
+                        // the profile/user-data dir from the command line. This
+                        // is done here (per window) so tabs are attached to the
+                        // right window and restore can reopen them in place.
+                        var btype = root.browserTypeForClass(c.class)
+                        var bprofile = btype ? root.resolveBrowserProfile(btype, c._cmdline) : null
+
                         windows.push({
                             "class": c.class,
                             "title": c.title,
@@ -598,18 +697,15 @@ Panel {
                             "size": [c.size[0], c.size[1]],
                             "splitRatio": c.splitratio,
                             "floating": c.floating,
-                            "fullscreen": c.fullscreen
+                            "fullscreen": c.fullscreen,
+                            "browser": btype,
+                            "browserProfile": bprofile,
+                            "tabs": null
                         })
                     }
-                    root.pendingSnapshot = {
-                        "timestamp": Date.now(),
-                        "windows": windows,
-                        "monitors": monitors
-                    }
-                    root.isSnapshotting = false
-                    root.lastAction = "Captured " + windows.length + " windows"
-                    saveNameField.text = generateDefaultName()
-                    root.showingNameInput = true
+                    root.snapTabsProc._windows = windows
+                    root._monitorsCaptured = monitors
+                    root.snapTabsProc.begin()
                 } catch(e) {
                     root.isSnapshotting = false
                     root.lastAction = "Failed to capture monitors"
@@ -618,6 +714,98 @@ Panel {
         }
     }
 
+    // Tab-capture pass. After windows are assembled, run the per-browser
+    // tab capture (Firefox session file / Chromium CDP; see scripts/capture_tabs.py)
+    // for each unique browser profile, then finalize pendingSnapshot. Tabs are
+    // attached to the first window of each profile so restore won't reopen the
+    // same pages from multiple windows sharing one browser process.
+    Process {
+        id: snapTabsProc
+        property var _windows: []
+
+        // Build and run the capture for every unique browser profile.
+        function begin() {
+            root.snapTabsProc.command = []
+            root.snapTabsProc._results = {}
+            var windows = root.snapTabsProc._windows
+            var script = __DIR__ + "/scripts/capture_tabs.py"
+            var seen = {}
+            var invocations = []
+            for (var i = 0; i < windows.length; i++) {
+                var w = windows[i]
+                if (!w.browser || !w.browserProfile) continue
+                var key = w.browser + "\u0001" + w.browserProfile
+                if (seen[key]) continue
+                seen[key] = true
+                invocations.push("python3 " + root.shellArg(script) + " " +
+                    root.shellArg(w.browser) + " " + root.shellArg(w.browserProfile) + " " +
+                    root.shellArg(key))
+            }
+            if (invocations.length === 0) {
+                root.snapTabsProc.finishNow()
+                return
+            }
+            root.snapTabsProc.command = ["bash", "-lc", invocations.join("; ")]
+            root.snapTabsProc.running = true
+        }
+
+        function finishNow() {
+            root.pendingSnapshot = root.snapTabsProc.assemble()
+            root.isSnapshotting = false
+            root.lastAction = "Captured " + root.snapTabsProc._windows.length + " windows"
+            saveNameField.text = generateDefaultName()
+            root.showingNameInput = true
+        }
+
+        // Build pendingSnapshot, attaching parsed tab data onto windows.
+        function assemble() {
+            var windows = root.snapTabsProc._windows
+            var results = root.snapTabsProc._results || {}
+            var attached = {}
+            for (var i = 0; i < windows.length; i++) {
+                var w = windows[i]
+                if (!w.browser || !w.browserProfile) continue
+                var key = w.browser + "\u0001" + w.browserProfile
+                if (attached[key]) continue
+                attached[key] = true
+                var res = results[key]
+                if (res && res.ok && Array.isArray(res.tabs)) {
+                    w.tabs = res.tabs
+                } else {
+                    w.tabs = []
+                }
+            }
+            return {
+                "timestamp": Date.now(),
+                "windows": windows,
+                "monitors": root._monitorsCaptured || []
+            }
+        }
+
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                // Each line is one JSON object from the helper, routed by its
+                // embedded _profile key (set by the capture script).
+                var results = {}
+                var linesOut = (text || "").split("\n")
+                for (var r = 0; r < linesOut.length; r++) {
+                    var ln = linesOut[r].trim()
+                    if (!ln) continue
+                    try {
+                        var o = JSON.parse(ln)
+                        if (o && o._profile) results[o._profile] = o
+                    } catch(e) {}
+                }
+                // Snapshot the monitors from the last stage (stored on root).
+                root.snapTabsProc._results = results
+                root.snapTabsProc.finishNow()
+            }
+        }
+    }
+
+    // Monitor list captured by the monitors stage, stashed for the final
+    // profile assembly (kept on root so snapTabsProc.assemble can read it).
     // --- Save ---
 
     function doSave(name) {
@@ -871,6 +1059,13 @@ Panel {
                         continue
                     }
                     var cmd = root.sanitizeLaunchCommand(w.command, cls)
+
+                    // For browser windows with captured tabs, append the page
+                    // URLs (validated, shell-quoted) via --new-window so a
+                    // restored snapshot reopens the browser's tabs in place.
+                    if (w.browser && (w.tabs && w.tabs.length > 0)) {
+                        cmd = root.buildBrowserLaunchCommand(cmd, cls, w.tabs)
+                    }
 
                     // Launch file: exec the (already shell-quoted) command.
                     if (cmd.length === 0) {

@@ -88,3 +88,71 @@ export function buildMonitorMap(monitors) {
     }
     return map
 }
+
+// Class-name sets for browser detection. Matches Firefox-family and
+// Chromium-family browsers by their Hyprland window class.
+const FIREFOX_CLASSES = /^(firefox|librewolf|waterfox|floorp|tor-browser|zen|palemoon|seamonkey)(\.|-|$)/i
+const CHROMIUM_CLASSES = /(chrom|brave|vivaldi|edge|opera|electron)/i
+
+// Return the browser engine type for a window class: "firefox", "chromium",
+// or null if it isn't a browser we can tab-capture.
+export function browserTypeForClass(cls) {
+    if (typeof cls !== "string" || cls.length === 0) return null
+    if (FIREFOX_CLASSES.test(cls)) return "firefox"
+    if (CHROMIUM_CLASSES.test(cls)) return "chromium"
+    return null
+}
+
+// Validate a tab URL before it is injected into a launch command. Accepts
+// http/https and a conservative set of safe schemes, and rejects anything with
+// shell metacharacters or whitespace so a crafted/compromised URL can never
+// break out of the generated bash. Returns the trimmed URL or null.
+export function safeUrl(url) {
+    if (typeof url !== "string") return null
+    var u = url.trim()
+    if (u.length === 0 || u.length > 4096) return null
+    // Scheme + rest; reject any shell metacharacters entirely.
+    if (!/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(u)) {
+        // Allow a few special no-host schemes browsers can show in tabs.
+        if (/^(about|chrome|edge|brave|moz-extension|file|view-source|chrome-extension):/i.test(u)) {
+            if (/[\s`$;|&<>"'\\\x00-\x1f]/.test(u)) return null
+            return u
+        }
+        return null
+    }
+    if (/[\s`$;|&<>"'\\\x00-\x1f]/.test(u)) return null
+    return u
+}
+
+// Build a list of shell-quoted, validated tab URLs (excluding new-tab/blank
+// pages that we don't want to reopen) from a snapshot window's tabs array.
+// Returns a string like "'url1' 'url2'", or "" if there are no usable tabs.
+export function buildTabUrls(tabs) {
+    if (!Array.isArray(tabs)) return ""
+    var out = []
+    for (var i = 0; i < tabs.length; i++) {
+        var tab = tabs[i]
+        if (!tab || typeof tab.url !== "string") continue
+        var url = safeUrl(tab.url)
+        if (url === null) continue
+        var lower = url.toLowerCase()
+        if (lower === "about:newtab" || lower === "about:blank" || lower === "") continue
+        out.push(shellArg(url))
+    }
+    return out.join(" ")
+}
+
+// Given a base launch command string and a browser window snapshot, append the
+// tab URLs with --new-window when tabs are present. Returns the augmented
+// command ("" if nothing usable). Used by restore to reopen a browser's pages.
+export function buildBrowserLaunchCommand(pureCommand, cls, tabs) {
+    var cmd = pureCommand || ""
+    var type = browserTypeForClass(cls)
+    if (!type) return cmd
+    var urls = buildTabUrls(tabs)
+    if (urls.length === 0) return cmd
+    // If the base command is empty, fall back to the browser executable name.
+    var base = cmd.length > 0 ? cmd : "'" + cls.toLowerCase() + "'"
+    return base + " --new-window " + urls
+}
+
