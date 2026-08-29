@@ -23,6 +23,30 @@ import subprocess
 import sys
 
 
+# Schemes a tab URL may use and still be worth restoring. Mirrors the
+# safeUrl() allowlist used on the restore side (restoreLogic.mjs), so tabs
+# that aren't plain http/https (e.g. locally-opened files) are not silently
+# dropped during capture.
+_CAPTURE_URL_SCHEMES = (
+    "http:",
+    "https:",
+    "file:",
+    "chrome:",
+    "edge:",
+    "brave:",
+    "moz-extension:",
+    "view-source:",
+    "about:",
+    "chrome-extension:",
+)
+
+
+def _scheme(url):
+    if ":" in url:
+        return url.split(":", 1)[0] + ":"
+    return ""
+
+
 def _decode_mozlz4(path):
     """Decode a mozLz40 raw-block LZ4 file to a JSON string."""
     with open(path, "rb") as f:
@@ -50,7 +74,68 @@ def _decode_mozlz4(path):
     raise RuntimeError("no lz4 decoder available (install python3-lz4 or lz4json)")
 
 
+def _resolve_firefox_profile_dir(profile_dir):
+    """Resolve the concrete Firefox profile directory to inspect.
+
+    ``profile_dir`` may be either a specific profile directory (containing
+    prefs.js / sessionstore-backups) or the parent ``~/.mozilla/firefox``
+    directory. In the latter case we pick the default profile from
+    profiles.ini, falling back to the most recently modified profile dir.
+    """
+    # Fast path: we were already given a real profile directory.
+    if os.path.isfile(os.path.join(profile_dir, "prefs.js")) or os.path.isdir(
+        os.path.join(profile_dir, "sessionstore-backups")
+    ):
+        return profile_dir
+
+    # Treat it as the firefox base dir: parse profiles.ini for the default.
+    ini = os.path.join(profile_dir, "profiles.ini")
+    profiles = []  # (is_default, path)
+    section = None
+    if os.path.isfile(ini):
+        for line in open(ini, "r", encoding="utf-8", errors="replace"):
+            line = line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].lower()
+                continue
+            if section and line.startswith("path="):
+                p = line[5:].strip()
+                if p:
+                    profiles.append((False, p))
+            elif section and line.startswith("default=") and line[8:].strip() == "1":
+                if profiles:
+                    profiles[-1] = (True, profiles[-1][1])
+
+    default = None
+    for is_default, p in profiles:
+        if is_default:
+            default = os.path.expanduser(os.path.join(profile_dir, p))
+            break
+    if default and (os.path.isfile(os.path.join(default, "prefs.js"))
+                    or os.path.isdir(os.path.join(default, "sessionstore-backups"))):
+        return default
+
+    # Fallback: prefer the default* dir, else the most recently modified.
+    import glob as _glob
+    cands = _glob.glob(os.path.join(profile_dir, "*.default*"))
+    if not cands:
+        cands = [
+            os.path.join(profile_dir, name)
+            for name in os.listdir(profile_dir)
+            if os.path.isdir(os.path.join(profile_dir, name))
+        ]
+    if not cands:
+        return profile_dir
+    cands = [c for c in cands if os.path.isdir(c)]
+    if not cands:
+        return profile_dir
+    defkey = [c for c in cands if ".default" in c]
+    pool = defkey or cands
+    return max(pool, key=os.path.getmtime)
+
+
 def capture_firefox(profile_dir):
+    profile_dir = _resolve_firefox_profile_dir(profile_dir)
     candidates = [
         "sessionstore-backups/recovery.jsonlz4",
         "sessionstore-backups/recovery.baklz4",
@@ -185,7 +270,7 @@ def _capture_vivaldi_snss(user_data_dir):
                 tid, idx, ulen = struct.unpack_from("<iiI", contents, 4)
                 if 0 < ulen <= 4096 and 16 + ulen <= len(contents):
                     url = contents[16 : 16 + ulen].decode("utf-8", "replace")
-                    if url.startswith(("http://", "https://")):
+                    if _scheme(url) in _CAPTURE_URL_SCHEMES:
                         nav.setdefault(tid, {})[idx] = url
             elif cid == 0 and len(contents) >= 8:
                 wid, tid = struct.unpack_from("<ii", contents, 0)
