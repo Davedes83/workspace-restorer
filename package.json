@@ -1,0 +1,13 @@
+{
+  "name": "workspace-restorer",
+  "version": "1.0.0",
+  "description": "Snapshot and restore Hyprland workspace layouts as named profiles.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
