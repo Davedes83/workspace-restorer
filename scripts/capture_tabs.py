@@ -140,58 +140,87 @@ def _iter_snss_records(path):
 
 
 def _capture_vivaldi_snss(user_data_dir):
-    """Decode Chromium-family 'Sessions/Tabs_*' SNSS files.
+    """Decode Chromium-family 'Sessions/Session_*' SNSS files.
 
-    Format (validated against a live Vivaldi 8.1 session):
+    Format (Session Service dialect, validated against a live Vivaldi 8.1
+    session):
       * File header: b'SNSS' + int32 version (3); then length-prefixed records.
       * Each record: uint16 LE byte_len, uint8 command_id, then payload.
-      * command 1 (navigation): [u32 payload_len][u32 tab_id][u32 index]
-        [u32 url_len][url utf-8]...
-      * command 4 (tab membership/current): [u32 tab_id][u32 current_index]...
-    The current open tab for each tab_id is the URL at the current index.
+      * Session Service commands:
+          0  SetTabWindow                {window_id, tab_id}
+          2  SetTabIndexInWindow         {tab_id, index}
+          6  UpdateTabNavigation (Pickle) [u32 pickle_size][i32 tab_id]
+             [i32 index][u32 url_len][url utf-8][string16 title]...
+          7  SetSelectedNavigationIndex  {tab_id, index}
+          8  SetSelectedTabInIndex       {window_id, index}
+    The currently-open URL for a tab is its navigation entry at the tab's
+    selected navigation index (command 7; defaults to last entry).
+
+    NOTE: the older `Tabs_*` files are the "recently closed tabs" restore
+    list (a different dialect and not the live session), so we read the
+    `Session_*` files instead.
     """
     candidates = []
     for base in (user_data_dir, os.path.join(user_data_dir, "Default")):
         sess = os.path.join(base, "Sessions")
         if os.path.isdir(sess):
-            candidates.extend(
-                os.path.join(sess, name)
-                for name in sorted(os.listdir(sess))
-                if name.startswith("Tabs_")
-            )
+            for name in os.listdir(sess):
+                if name.startswith("Session_"):
+                    candidates.append(os.path.join(sess, name))
+    if not candidates:
+        return None
+    # The active session is the most recently written Session_* file.
+    path = max(candidates, key=os.path.getmtime)
 
-    # Each Tabs_* file uses its own tab-id namespace (separate snapshot), so
-    # resolve within each file independently, then union the resulting URLs.
+    nav = {}   # tab_id -> {index: url}
+    tabwin = {}  # tab_id -> window_id
+    tabidx = {}  # tab_id -> index within window
+    selecnav = {}   # tab_id -> selected navigation index
+    selidx = {}     # window_id -> selected tab index
+    try:
+        for cid, contents in _iter_snss_records(path):
+            if cid == 6 and len(contents) >= 16:
+                # UpdateTabNavigation: [u32 pickle][i32 tab_id][i32 index]
+                #   [u32 url_len][url]...
+                tid, idx, ulen = struct.unpack_from("<iiI", contents, 4)
+                if 0 < ulen <= 4096 and 16 + ulen <= len(contents):
+                    url = contents[16 : 16 + ulen].decode("utf-8", "replace")
+                    if url.startswith(("http://", "https://")):
+                        nav.setdefault(tid, {})[idx] = url
+            elif cid == 0 and len(contents) >= 8:
+                wid, tid = struct.unpack_from("<ii", contents, 0)
+                tabwin[tid] = wid
+            elif cid == 2 and len(contents) >= 8:
+                tid, idx = struct.unpack_from("<ii", contents, 0)
+                tabidx[tid] = idx
+            elif cid == 7 and len(contents) >= 8:
+                tid, idx = struct.unpack_from("<ii", contents, 0)
+                selecnav[tid] = idx
+            elif cid == 8 and len(contents) >= 8:
+                wid, idx = struct.unpack_from("<ii", contents, 0)
+                selidx[wid] = idx
+    except Exception:  # noqa: BLE001
+        return None
+
+    wins = {}
+    for tid, wid in tabwin.items():
+        wins.setdefault(wid, []).append(tid)
+
     seen = set()
     tabs = []
-    files_used = 0
-    for path in candidates:
-        try:
-            nav = {}  # tab_id -> {index: url}
-            cur = {}  # tab_id -> current index
-            for cid, contents in _iter_snss_records(path):
-                if cid == 1 and len(contents) >= 16:
-                    # [u32 payload_size][u32 tab_id][u32 index][u32 url_len][url]
-                    tid, idx, ulen = struct.unpack_from("<III", contents, 4)
-                    if 0 < ulen <= 1024 and 16 + ulen <= len(contents):
-                        url = contents[16 : 16 + ulen].decode("utf-8", "replace")
-                        if url.startswith(("http://", "https://")):
-                            nav.setdefault(tid, {})[idx] = url
-                elif cid == 4 and len(contents) >= 8:
-                    # [u32 tab_id][u32 current_index]...
-                    tid, idx = struct.unpack_from("<II", contents, 0)
-                    cur[tid] = idx
-            files_used += 1
-        except Exception:  # noqa: BLE001
-            continue
-        for tid, idx in cur.items():
-            if tid in nav and idx in nav[tid]:
-                url = nav[tid][idx]
-                if url not in seen:
-                    seen.add(url)
-                    tabs.append({"url": url, "title": ""})
-    if not files_used:
-        return None  # distinguish "no debug port" from "no tabs found"
+    for wid in wins:
+        ordered = sorted(wins[wid], key=lambda t: tabidx.get(t, 0))
+        for tid in ordered:
+            hist = nav.get(tid, {})
+            if not hist:
+                continue
+            sel = selecnav.get(tid)
+            url = hist.get(sel) if sel is not None else None
+            if url is None:
+                url = hist[max(hist)]
+            if url and url not in seen:
+                seen.add(url)
+                tabs.append({"url": url, "title": ""})
     return tabs
 
 

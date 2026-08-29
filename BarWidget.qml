@@ -20,6 +20,7 @@ Panel {
     property var pendingSnapshot: null
     property bool showingNameInput: false
     property var monitorMap: ({})
+    property var _monitorsCaptured: []
 
     readonly property color hoverBg: bar
         ? Style.hoverFillFor(bar.foreground, Color.accent)
@@ -703,12 +704,13 @@ Panel {
                             "tabs": null
                         })
                     }
-                    root.snapTabsProc._windows = windows
+                    snapTabsProc._windows = windows
                     root._monitorsCaptured = monitors
-                    root.snapTabsProc.begin()
+                    snapTabsProc.begin()
                 } catch(e) {
                     root.isSnapshotting = false
                     root.lastAction = "Failed to capture monitors"
+                    console.error("WSRESTORE snapMonitors error:", String(e && e.stack || e), "| lastAction=", root.lastAction)
                 }
             }
         }
@@ -722,13 +724,14 @@ Panel {
     Process {
         id: snapTabsProc
         property var _windows: []
+        property var _results: {}
 
         // Build and run the capture for every unique browser profile.
         function begin() {
-            root.snapTabsProc.command = []
-            root.snapTabsProc._results = {}
-            var windows = root.snapTabsProc._windows
-            var script = __DIR__ + "/scripts/capture_tabs.py"
+            snapTabsProc.command = []
+            snapTabsProc._results = {}
+            var windows = snapTabsProc._windows
+            var script = Qt.resolvedUrl("scripts/capture_tabs.py").toString().replace(/^file:\/\//, "")
             var seen = {}
             var invocations = []
             for (var i = 0; i < windows.length; i++) {
@@ -742,25 +745,25 @@ Panel {
                     root.shellArg(key))
             }
             if (invocations.length === 0) {
-                root.snapTabsProc.finishNow()
+                snapTabsProc.finishNow()
                 return
             }
-            root.snapTabsProc.command = ["bash", "-lc", invocations.join("; ")]
-            root.snapTabsProc.running = true
+            snapTabsProc.command = ["bash", "-lc", invocations.join("; ")]
+            snapTabsProc.running = true
         }
 
         function finishNow() {
-            root.pendingSnapshot = root.snapTabsProc.assemble()
+            root.pendingSnapshot = snapTabsProc.assemble()
             root.isSnapshotting = false
-            root.lastAction = "Captured " + root.snapTabsProc._windows.length + " windows"
+            root.lastAction = "Captured " + snapTabsProc._windows.length + " windows"
             saveNameField.text = generateDefaultName()
             root.showingNameInput = true
         }
 
         // Build pendingSnapshot, attaching parsed tab data onto windows.
         function assemble() {
-            var windows = root.snapTabsProc._windows
-            var results = root.snapTabsProc._results || {}
+            var windows = snapTabsProc._windows
+            var results = snapTabsProc._results || {}
             var attached = {}
             for (var i = 0; i < windows.length; i++) {
                 var w = windows[i]
@@ -798,8 +801,8 @@ Panel {
                     } catch(e) {}
                 }
                 // Snapshot the monitors from the last stage (stored on root).
-                root.snapTabsProc._results = results
-                root.snapTabsProc.finishNow()
+                snapTabsProc._results = results
+                snapTabsProc.finishNow()
             }
         }
     }
