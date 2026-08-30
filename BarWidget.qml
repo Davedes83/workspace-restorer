@@ -966,6 +966,12 @@ Panel {
             var toMove = []
             var toFloat = []
             var matchedAddrs = []
+            // Addresses of currently-open browser windows whose snapshot had
+            // captured tabs. These are closed (so the browser process quits)
+            // before we relaunch it fresh with exactly the snapshot's tabs.
+            // This avoids running-browser CLI quirks (Firefox one-window-per-URL,
+            // Vivaldi session-restore extras) and workspace-focus slippage.
+            var browserCloseAddrs = []
 
             if (existing && existing.length > 0) {
                 for (var i = 0; i < existing.length; i++) {
@@ -989,9 +995,18 @@ Panel {
                     }
 
                     if (bestIdx >= 0) {
+                        var target = profile.windows[bestIdx]
+                        // Browser snapshot windows with captured tabs are
+                        // relaunched fresh: close the existing matching window so
+                        // the browser process exits, then let Phase 3 spawn one
+                        // clean window with exactly the snapshot's tabs. Leave
+                        // matched[] false so Phase 3 spawns this window.
+                        if (target.browser && target.tabs && target.tabs.length > 0) {
+                            browserCloseAddrs.push(e.address)
+                            continue
+                        }
                         matched[bestIdx] = true
                         matchedAddrs.push(e.address)
-                        var target = profile.windows[bestIdx]
                         var tws = root.safeWorkspace(target.workspace)
                         // Move to correct workspace if needed
                         if (tws !== null && String(e.workspace.name) !== String(target.workspace)) {
@@ -1063,6 +1078,20 @@ Panel {
                 }
                 lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fx + ", y=" + fy + ", relative=false, window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
                 lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fw + ", y=" + fh + ", window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
+            }
+
+            // Phase 2c: Close existing browser windows whose snapshot carried
+            // captured tabs. Closing them makes the browser process exit; the
+            // relaunch in Phase 3 then starts it fresh so `browser url1 url2`
+            // opens exactly one window with the snapshot's tabs. Wait briefly
+            // for the process to fully quit so the fresh launch isn't
+            // forwarded to the dying instance.
+            if (browserCloseAddrs.length > 0) {
+                for (var bc = 0; bc < browserCloseAddrs.length; bc++) {
+                    lines.push("echo \"[close-browser] addr=" + browserCloseAddrs[bc] + "\" >> \"$LOGFILE\"")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.close({window='address:" + browserCloseAddrs[bc] + "'})\" 2>>\"$LOGFILE\" || true")
+                }
+                lines.push("sleep 1.5")
             }
 
             // Phase 3: Spawn missing windows directly onto their target
