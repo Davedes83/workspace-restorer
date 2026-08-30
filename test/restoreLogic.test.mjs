@@ -318,30 +318,27 @@ test("buildBrowserLaunchCommand strips a stale --new-window tail to avoid duplic
 
 // --- buildBrowserLaunchCommands ---
 
-test("buildBrowserLaunchCommands gives Chromium one --new-window with all URLs", () => {
+test("buildBrowserLaunchCommands passes all URLs without --new-window for Chromium", () => {
     const tabs = [{ url: "https://github.com/" }, { url: "https://www.reddit.com/" }]
     assert.deepEqual(
         buildBrowserLaunchCommands("'google-chrome'", "Google-chrome", tabs),
-        ["'google-chrome' --new-window 'https://github.com/' 'https://www.reddit.com/'"]
+        ["'google-chrome' 'https://github.com/' 'https://www.reddit.com/'"]
     )
 })
 
-test("buildBrowserLaunchCommands keeps a single tab in one --new-window for Chromium", () => {
+test("buildBrowserLaunchCommands keeps a single Chromium tab in one command", () => {
     const tabs = [{ url: "https://github.com/" }]
     assert.deepEqual(
         buildBrowserLaunchCommands("'google-chrome'", "Google-chrome", tabs),
-        ["'google-chrome' --new-window 'https://github.com/'"]
+        ["'google-chrome' 'https://github.com/'"]
     )
 })
 
-test("buildBrowserLaunchCommands opens one Firefox window then adds tabs (not one window per URL)", () => {
+test("buildBrowserLaunchCommands passes all URLs without --new-window for Firefox (no split windows)", () => {
     const tabs = [{ url: "https://github.com/" }, { url: "https://www.reddit.com/" }]
     assert.deepEqual(
         buildBrowserLaunchCommands("'firefox'", "firefox", tabs),
-        [
-            "'firefox' --new-window 'https://github.com/'",
-            "'firefox' --new-tab 'https://www.reddit.com/'",
-        ]
+        ["'firefox' 'https://github.com/' 'https://www.reddit.com/'"]
     )
 })
 

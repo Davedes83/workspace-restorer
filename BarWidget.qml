@@ -158,10 +158,11 @@ Panel {
     }
 
     // Returns an array of shell commands to run in sequence (one per step) to
-    // reopen a browser window's tabs. Mirrors restoreLogic.mjs. For Firefox we
-    // must not pass all URLs to a single `--new-window`, which an already-running
-    // instance turns into one window per URL — instead open one new window with
-    // the first URL and add the rest as new tabs in that window.
+    // reopen a browser window's tabs. Mirrors restoreLogic.mjs. URLs are passed
+    // without `--new-window` because both Firefox and Vivaldi when already
+    // running forward that command as one-window-per-URL or add their own
+    // session-restore tabs.  Open URLs as plain arguments so they become new
+    // tabs in the existing window (one window, all tabs, no duplicates).
     function buildBrowserLaunchCommands(pureCommand, cls, tabs) {
         var cmd = pureCommand || ""
         var type = root.browserTypeForClass(cls)
@@ -171,13 +172,7 @@ Panel {
         var base = cmd.length > 0 ? cmd : root.shellArg(cls.toLowerCase())
         var marker = base.indexOf(" --new-window ")
         if (marker !== -1) base = base.slice(0, marker)
-        if (type === "firefox") {
-            var parts = urls.split(" ")
-            var out = [base + " --new-window " + parts[0]]
-            for (var i = 1; i < parts.length; i++) out.push(base + " --new-tab " + parts[i])
-            return out
-        }
-        return [base + " --new-window " + urls]
+        return [base + " " + urls]
     }
 
     // Validate a workspace name from editable metadata. Real workspaces are
