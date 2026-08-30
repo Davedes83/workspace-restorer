@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "davedes.workspace-restorer",
   "name": "Workspace Restorer",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "Davedes",
   "license": "MIT",
   "description": "Snapshot and restore Hyprland workspace layouts as named profiles.",

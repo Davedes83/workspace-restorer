@@ -17,10 +17,17 @@ ever READS; it never starts a browser or opens a debug port itself.
 
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
 import sys
+
+
+# A Chromium DevTools debug port must be a bare decimal 1-5 digit port number.
+# Anchored to the whole token so attacker-influenced DevToolsActivePort values
+# (e.g. "1234@evil") are rejected rather than reinterpreted as a URL host.
+_PORT_RE = re.compile(r"^[0-9]{1,5}$")
 
 
 # Schemes a tab URL may use and still be worth restoring. Mirrors the
@@ -48,9 +55,30 @@ def _scheme(url):
 
 
 def _decode_mozlz4(path):
-    """Decode a mozLz40 raw-block LZ4 file to a JSON string."""
-    with open(path, "rb") as f:
-        data = f.read()
+    """Decode a mozLz40 raw-block LZ4 file to a JSON string.
+
+    The file (and thus the padding of the file) comes from the active Firefox
+    profile directory, which is influenced by the window's own /proc command
+    line, so it is treated as untrusted and bounded:
+
+      * the compressed file is stat-checked against a ceiling before any read;
+      * Firefox recovery files lay out as the ``mozLz40\\0`` magic followed by
+        an LZ4 raw block prefixed with its little-endian uncompressed size. We
+        read that prefix ourselves and reject it if it exceeds a ceiling, then
+        let the decompressor honour it. lz4.block's own ``uncompressed_size``
+        is a *maximum* that (as the library documents) is used in place of the
+        prefix and so must not be passed for these size-prefixed blocks, but
+        validating the prefix up front bounds the allocation identically;
+      * the fallback CLI's retained output is length-checked against the same
+        ceiling.
+    """
+    try:
+        if os.stat(path).st_size > _MOZLZ4_FILE_MAX_BYTES:
+            raise ValueError("mozLz40 file exceeds size ceiling")
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        raise
     if data[:8] != b"mozLz40\x00":
         raise ValueError("not a mozLz40 file")
     payload = data[8:]
@@ -58,9 +86,26 @@ def _decode_mozlz4(path):
     # Preferred: python lz4.block
     try:
         import lz4.block  # type: ignore
-        return lz4.block.decompress(payload)
+        # Firefox raw blocks carry a 4-byte little-endian uncompressed-size
+        # prefix (store_size=True). Read and validate it ourselves before
+        # decoding so a crafted file cannot declare a huge output and force an
+        # unbounded allocation (with no explicit size, lz4.block reads this
+        # very prefix, so this bounds its buffer before it allocates).
+        if len(payload) < 4:
+            raise ValueError("mozLz40 block too small")
+        declared = struct.unpack("<I", payload[:4])[0]
+        if declared > _MOZLZ4_UNCOMPRESSED_MAX_BYTES:
+            raise ValueError("mozLz40 block declares oversized output")
+        raw = lz4.block.decompress(payload)
+        if len(raw) > _MOZLZ4_UNCOMPRESSED_MAX_BYTES:
+            raise ValueError("mozLz40 decompression outside size bounds")
+        if len(raw) != declared:
+            raise ValueError("mozLz40 size mismatch")
+        return raw
     except ImportError:
         pass
+    except Exception:  # noqa: BLE001 - LZ4BlockError / oversized/malformed input
+        raise ValueError("mozLz40 decompression failed or exceeded bounds")
 
     # Fallback: lz4jsoncat CLI (from the lz4json package)
     lz4jsoncat = shutil.which("lz4jsoncat")
@@ -68,8 +113,10 @@ def _decode_mozlz4(path):
         proc = subprocess.run(
             [lz4jsoncat, path], capture_output=True, timeout=10
         )
-        if proc.returncode == 0:
+        if proc.returncode == 0 and proc.stdout and \
+                len(proc.stdout) <= _MOZLZ4_UNCOMPRESSED_MAX_BYTES:
             return proc.stdout
+        raise ValueError("lz4jsoncat output absent or exceeds size bounds")
 
     raise RuntimeError("no lz4 decoder available (install python3-lz4 or lz4json)")
 
@@ -209,24 +256,52 @@ def capture_chromium(user_data_dir):
     return {"ok": False, "error": "no current tabs found in sessions files"}
 
 
+# Ceilings applied to untrusted local files / responses in capture_tabs.py.
+# The DevTools port file and browser session / recovery files are derived from
+# a window's own /proc command line (any local process can present a matching
+# window), so they are treated as attacker-influenced input and bounded.
+_CDP_RESPONSE_MAX_BYTES = 2 * 1024 * 1024
+_DEVTOOLS_PORT_FILE_MAX_BYTES = 4096
+# Bound on a single captured Firefox session file. The compressed mozLz40 file
+# is stat-bounded before any read, and the raw-LZ4 decompressor is given an
+# explicit uncompressed_size ceiling so a crafted tiny file can never trigger
+# an arbitrarily large allocation (raw LZ4 blocks carry no size header).
+_MOZLZ4_FILE_MAX_BYTES = 64 * 1024 * 1024
+_MOZLZ4_UNCOMPRESSED_MAX_BYTES = 256 * 1024 * 1024
+
+
 def _capture_chromium_cdp(user_data_dir):
     active_port = os.path.join(user_data_dir, "DevToolsActivePort")
     if not os.path.isfile(active_port):
         return None
+    if os.path.getsize(active_port) > _DEVTOOLS_PORT_FILE_MAX_BYTES:
+        return None
     try:
-        with open(active_port, "r", encoding="utf-8") as f:
+        with open(active_port, "r", encoding="utf-8", errors="replace") as f:
             lines = [l.strip() for l in f.readlines() if l.strip()]
         if not lines:
             return None
         port = lines[0]
+        # The port is attacker-influenced (see module docstring). Constrain it
+        # to a bare 1-5 digit port number so a crafted value can never turn
+        # "http://127.0.0.1:%s/json/list" into a request to some other host
+        # (e.g. "1234@evil" would otherwise become host "evil"). We require a
+        # head-anchored match of the whole token.
+        if not _PORT_RE.match(port):
+            return None
     except Exception:  # noqa: BLE001
         return None
 
     try:
         proc = subprocess.run(
-            ["curl", "-s", "--max-time", "3", "http://127.0.0.1:%s/json/list" % port],
+            ["curl", "-s", "--max-time", "3", "--max-filesize",
+             str(_CDP_RESPONSE_MAX_BYTES), "http://127.0.0.1:%s/json/list" % port],
             capture_output=True, timeout=5, text=True,
         )
+        # Both transport errors and payloads that exceeded --max-filesize set a
+        # non-zero return code; require success and stay within the ceiling.
+        if proc.returncode != 0 or len(proc.stdout) > _CDP_RESPONSE_MAX_BYTES:
+            return None
         targets = json.loads(proc.stdout)
     except Exception:  # noqa: BLE001
         return None
