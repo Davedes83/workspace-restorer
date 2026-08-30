@@ -317,25 +317,33 @@ def _capture_vivaldi_snss(user_data_dir):
     except Exception:  # noqa: BLE001
         return None
 
+    if not tabwin:
+        return []
+
     wins = {}
     for tid, wid in tabwin.items():
         wins.setdefault(wid, []).append(tid)
 
+    # Chromium assigns window IDs sequentially — the most recently created
+    # window (the one the user just opened with `--new-window urls`) has the
+    # highest ID.  Pick only that window's tabs, otherwise we'd include
+    # stale windows from Vivaldi's own session restore (old restored tabs).
+    focus_wid = max(wins)
+
     seen = set()
     tabs = []
-    for wid in wins:
-        ordered = sorted(wins[wid], key=lambda t: tabidx.get(t, 0))
-        for tid in ordered:
-            hist = nav.get(tid, {})
-            if not hist:
-                continue
-            sel = selecnav.get(tid)
-            url = hist.get(sel) if sel is not None else None
-            if url is None:
-                url = hist[max(hist)]
-            if url and url not in seen:
-                seen.add(url)
-                tabs.append({"url": url, "title": ""})
+    ordered = sorted(wins[focus_wid], key=lambda t: tabidx.get(t, 0))
+    for tid in ordered:
+        hist = nav.get(tid, {})
+        if not hist:
+            continue
+        sel = selecnav.get(tid)
+        url = hist.get(sel) if sel is not None else None
+        if url is None:
+            url = hist[max(hist)]
+        if url and url not in seen:
+            seen.add(url)
+            tabs.append({"url": url, "title": ""})
     return tabs
 
 
