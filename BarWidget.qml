@@ -1108,7 +1108,13 @@ Panel {
                     }
                     var steps = []
                     for (var k = 0; k < cmds.length; k++) {
-                        steps.push(k === 0 && cmds.length === 1 ? "exec " + cmds[k] : cmds[k])
+                        if (k === 0 && cmds.length === 1) {
+                            steps.push("exec " + cmds[k])
+                        } else if (k === 0) {
+                            steps.push(cmds[k] + " &")
+                        } else {
+                            steps.push(cmds[k])
+                        }
                         if (k < cmds.length - 1) steps.push("sleep 0.4")
                     }
                     var launchline = steps.length > 0 ? steps.join("\n") : "exit 1"
