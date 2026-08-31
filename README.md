@@ -66,6 +66,9 @@ omarchy restart shell
 - Hyprland compositor
 - Quickshell (for the shell framework)
 
+## Buy Me A Coffee
+PayPal @DavidDesousa13
+
 ## License
 
 MIT
