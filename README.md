@@ -1,5 +1,7 @@
 <img width="1874" height="525" alt="Workspace Restore" src="https://github.com/user-attachments/assets/59c65425-2446-405c-aaa2-2636177fa2fb" />
 
+<a href="https://paypal.me/DavidDesousa13"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40px"></a>
+
 ---
 # Workspace Restorer
 
@@ -65,9 +67,6 @@ omarchy restart shell
 - [Omarchy](https://omarchy.org/) Linux
 - Hyprland compositor
 - Quickshell (for the shell framework)
-
-## Buy Me A Coffee
-PayPal @DavidDesousa13
 
 ## License
 
