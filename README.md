@@ -88,6 +88,29 @@ pending snapshot.
 - Hyprland compositor
 - Quickshell (for the shell framework)
 
+The plugin uses these commands, all of which ship with a standard Omarchy install:
+
+| Command | Package | Used for |
+| --- | --- | --- |
+| `hyprctl` | `hyprland` | reading clients/monitors and dispatching window moves |
+| `python3` | `python` | the bundled `scripts/profile_store.py` profile reader/writer |
+| `bash` | `bash` | per-process `/proc` introspection during a snapshot |
+| `notify-send` | `libnotify` | action feedback notifications |
+| `curl` | `curl` | optional — Chromium tab capture over `--remote-debugging-port` only |
+
+No npm or pip install step is required; `npm test` exists only for running the unit tests. If an optional command is missing, the feature that needs it is skipped and the rest of the plugin keeps working.
+
+## Data and removal
+
+All state lives in `~/.config/omarchy/workspace-restorer/`:
+
+| Path | Contents |
+| --- | --- |
+| `*.json` | saved layout profiles |
+| `last-restore.log` | per-step restore log |
+
+Nothing is written outside that directory, and the plugin installs no services, hooks, or background daemons. `omarchy plugin remove davedes.workspace-restorer` plus deleting that directory is a complete uninstall; also drop the `davedes.workspace-restorer` entry from `~/.config/omarchy/shell.json`.
+
 ## Troubleshooting
 
 **A restore says "partially failed".** Some dispatches were rejected by Hyprland.
