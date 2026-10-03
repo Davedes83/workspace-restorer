@@ -83,174 +83,50 @@ Panel {
         Quickshell.execDetached(["notify-send", "-a", "Workspace Restorer", "-i", "preferences-desktop-workspaces", summary, body || ""])
     }
 
-    // Return a valid, safe profile filename (without the .json suffix) or null.
-    // Prevents path traversal: rejects separators, "..", leading dots (hidden
-    // files), control characters, and overly long names so a crafted profile
-    // name can never escape the profile directory on save/read/delete.
-    function sanitizeProfileName(name) {
-        if (typeof name !== "string") return null
-        var n = name.trim()
-        if (n.length === 0 || n.length > 128) return null
-        if (n === "." || n === "..") return null
-        if (n.charAt(0) === ".") return null
-        if (/[\/\\\x00-\x1f]/.test(n)) return null
-        if (!/^[A-Za-z0-9][A-Za-z0-9._ \-]*$/.test(n)) return null
-        return n
-    }
+    // ------------------------------------------------------------------
+    // Shared logic delegates
+    //
+    // These thin wrappers keep the call sites below readable while the
+    // implementations live in restoreLogic.js - the SAME file the node test
+    // suite exercises. There is exactly one copy of every validator now, so a
+    // fix or a hardening change cannot apply to the tests but not to the
+    // running widget, which is exactly how the two copies drifted before.
+    // ------------------------------------------------------------------
 
-    // Add a nested-cardinality guard mirroring restoreLogic.mjs. A profile is
-    // command-launch input, so window and tab counts are capped even when a
-    // profile was hand-edited; the store helper enforces the same caps, this is
-    // defense in depth on the consuming side. Returns the profile or null.
-    function enforceProfileCardinality(profile) {
-        if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null
-        if (!Array.isArray(profile.windows) || profile.windows.length > 512) return null
-        for (var i = 0; i < profile.windows.length; i++) {
-            var w = profile.windows[i]
-            if (!w || typeof w !== "object" || Array.isArray(w)) return null
-            if (Array.isArray(w.tabs) && w.tabs.length > 300) return null
-        }
-        return profile
-    }
+    function sanitizeProfileName(name) { return Logic.sanitizeProfileName(name) }
 
-    // Shell-quote a string so a crafted value used in generated shell code
-    // cannot break out into a new command. Use for ALL profile/window-derived
-    // values injected into restore commands.
-    function shellArg(s) {
-        if (s === null || s === undefined) return "''"
-        return "'" + String(s).replace(/'/g, "'\\''") + "'"
-    }
+    // Nested-cardinality guard, defense in depth on the consuming side. The
+    // store helper enforces the same caps on save and load.
+    function enforceProfileCardinality(profile) { return Logic.enforceProfileCardinality(profile) }
 
-    // Build a safe relaunch command line from an editable profile "command".
-    // The executable token is restricted to a plain path/name (no shell
-    // metacharacters) and every token is shell-quoted, so a crafted profile
-    // cannot smuggle in $(...), backticks, ;, |, redirections, etc. Returns a
-    // ready-to-execute command string, or "" if nothing usable.
-    function sanitizeLaunchCommand(raw, fallbackClass) {
-        var src = raw || (fallbackClass ? fallbackClass.toLowerCase() : "")
-        var tokens = String(src).split(/\s+/).filter(function(t) { return t.length > 0 })
-        if (tokens.length === 0) return ""
-        // First token is the executable: must be a plain name or ./-relative path.
-        if (!/^(\.?\/)?[A-Za-z0-9_][A-Za-z0-9_.+/-]*$/.test(tokens[0])) return ""
-        var out = []
-        for (var i = 0; i < tokens.length; i++) out.push(root.shellArg(tokens[i]))
-        return out.join(" ")
-    }
+    function shellArg(s) { return Logic.shellArg(s) }
 
-    // Validate a tab URL before it is injected into a launch command. Accepts
-    // http/https and a conservative set of special schemes, and rejects anything
-    // with shell metacharacters or whitespace so a crafted/compromised URL can
-    // never break out of the generated bash. Mirrors restoreLogic.mjs safeUrl().
-    function safeUrl(url) {
-        if (typeof url !== "string") return null
-        var u = url.trim()
-        if (u.length === 0 || u.length > 4096) return null
-        if (!/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(u)) {
-            if (/^(about|chrome|edge|brave|moz-extension|file|view-source|chrome-extension):/i.test(u)) {
-                if (/[\s`$;|&<>"'\\\x00-\x1f]/.test(u)) return null
-                return u
-            }
-            return null
-        }
-        if (/[\s`$;|&<>"'\\\x00-\x1f]/.test(u)) return null
-        return u
-    }
+    function sanitizeLaunchCommand(raw, fallbackClass) { return Logic.sanitizeLaunchCommand(raw, fallbackClass) }
 
-    // Build a shell-quoted list of validated, non-blank tab URLs from a window's
-    // captured tabs array. Returns "" if there are no usable tabs.
-    function buildTabUrls(tabs) {
-        if (!Array.isArray(tabs)) return ""
-        var out = []
-        for (var i = 0; i < tabs.length; i++) {
-            var tab = tabs[i]
-            if (!tab || typeof tab.url !== "string") continue
-            var url = root.safeUrl(tab.url)
-            if (url === null) continue
-            var lower = url.toLowerCase()
-            if (lower === "about:newtab" || lower === "about:blank" || lower === "") continue
-            out.push(root.shellArg(url))
-        }
-        return out.join(" ")
-    }
+    function safeUrl(url) { return Logic.safeUrl(url) }
 
-    // Returns an array of shell commands to run in sequence (one per step) to
-    // reopen a browser window's tabs. Mirrors restoreLogic.mjs. URLs are passed
-    // without `--new-window` because both Firefox and Vivaldi when already
-    // running forward that command as one-window-per-URL or add their own
-    // session-restore tabs.  Open URLs as plain arguments so they become new
-    // tabs in the existing window (one window, all tabs, no duplicates).
+    function buildTabUrls(tabs) { return Logic.buildTabUrls(tabs) }
+
+    // URLs are passed WITHOUT --new-window: when the browser is already running,
+    // Firefox turns that into one window per URL and Vivaldi adds its own
+    // session-restore tabs. Plain arguments open as tabs in the existing window.
     function buildBrowserLaunchCommands(pureCommand, cls, tabs) {
-        var cmd = pureCommand || ""
-        var type = root.browserTypeForClass(cls)
-        if (!type) return cmd.length > 0 ? [cmd] : []
-        var urls = root.buildTabUrls(tabs)
-        if (urls.length === 0) return cmd.length > 0 ? [cmd] : []
-        var base = cmd.length > 0 ? cmd : root.shellArg(cls.toLowerCase())
-        var marker = base.indexOf(" --new-window ")
-        if (marker !== -1) base = base.slice(0, marker)
-        return [base + " " + urls]
+        return Logic.buildBrowserLaunchCommands(pureCommand, cls, tabs)
     }
 
-    // Validate a workspace name from editable metadata. Real workspaces are
-    // short strings of digits (optionally with a name/label), so only accept
-    // a conservative safe set to keep it from injecting shell/jq.
-    function safeWorkspace(ws) {
-        if (typeof ws !== "string") return null
-        if (!/^[_a-z0-9]{1,32}$/i.test(ws)) return null
-        return ws
-    }
+    function safeWorkspace(ws) { return Logic.safeWorkspace(ws) }
 
-    // Validate a Hyprland window class used in jq/shell filters to prevent
-    // injection through editable metadata.
-    function safeClass(cls) {
-        if (typeof cls !== "string") return null
-        if (!/^[A-Za-z0-9_.-]{1,128}$/.test(cls)) return null
-        return cls
-    }
+    function safeClass(cls) { return Logic.safeClass(cls) }
 
-    // Coerce an editable coordinate/size value to a finite number so it can
-    // never smuggle shell metacharacters into a generated dispatch.
-    function numOr(v) {
-        var n = Number(v)
-        return isFinite(n) ? Math.round(n) : 0
-    }
+    function numOr(v) { return Logic.numOr(v) }
 
-    // Pick a Nerd Font glyph that fits a profile name, falling back to a
-    // generic icon when no keyword matches.
-    function profileIconFor(name) {
-        var n = (name || "").toLowerCase()
-        if (/code|dev|coding|prog|program|project/.test(n)) return "\ue796"            // code
-        if (/work|office|job/.test(n)) return "\uf0c0"                                  // briefcase/users
-        if (/photo|image|picture|gimp|design|edit|art|draw/.test(n)) return "\uf1c5"    // image
-        if (/music|audio|song|media/.test(n)) return "\ue602"                           // music
-        if (/game|play|gaming/.test(n)) return "\uf11b"                                 // gamepad
-        if (/web|internet|www|browser|search/.test(n)) return "\ue700"                  // globe
-        if (/video|movie|film|stream/.test(n)) return "\uf03d"                          // film
-        if (/term|shell|cli|console/.test(n)) return "\uf120"                           // terminal
-        if (/chat|discord|telegram|message|slack/.test(n)) return "\uf086"              // comments
-        if (/doc|note|write|text|paper/.test(n)) return "\uf15c"                        // file-text
-        if (/file|folder|fm|nautilus|browse/.test(n)) return "\uf07b"                   // folder
-        if (/mail|email|gmail/.test(n)) return "\uf0e0"                                 // envelope
-        if (/home|default/.test(n)) return "\uf015"                                     // home
-        return "\uf2db"                                                                 // fingerprint/workspaces default
-    }
+    function profileIconFor(name) { return Logic.profileIconFor(name) }
 
-    function generateDefaultName() {
-        var d = new Date()
-        var pad = function(n) { return n < 10 ? "0" + n : "" + n }
-        return "snapshot-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
-               "-" + pad(d.getHours()) + pad(d.getMinutes())
-    }
+    function generateDefaultName() { return Logic.generateDefaultName() }
 
     // Return the browser engine for a window class: "firefox", "chromium", or
-    // null if the window isn't a supported browser. Mirrors the pure helper in
-    // restoreLogic.mjs (kept in sync for the QML-side detection).
-    function browserTypeForClass(cls) {
-        if (typeof cls !== "string" || cls.length === 0) return null
-        if (/^(firefox|librewolf|waterfox|floorp|tor-browser|zen|palemoon|seamonkey)(\.|-|$)/i.test(cls)) return "firefox"
-        if (/(chrom|brave|vivaldi|edge|opera|electron)/i.test(cls)) return "chromium"
-        return null
-    }
+    // null if the window isn't a supported browser.
+    function browserTypeForClass(cls) { return Logic.browserTypeForClass(cls) }
 
     // Resolve the profile/user-data directory for a browser window from its
     // captured /proc cmdline. For Chromium this is the --user-data-dir value
@@ -1114,31 +990,14 @@ Panel {
             if (existing && existing.length > 0) {
                 for (var i = 0; i < existing.length; i++) {
                     var e = existing[i]
-                    var bestIdx = -1
 
-                    // Match by class, then title for duplicates.
-                    // Only claim the first unmatched class hit as a fallback,
-                    // and only overwrite it on an exact title match - otherwise
-                    // repeated scans keep clobbering bestIdx with the LAST
-                    // same-class window instead of a stable pick.
-                    //
-                    // Class comparison is lowercased on both sides: every other
-                    // class decision in this file (browserTypeForClass, safeClass)
-                    // is case-insensitive, so a case-only difference between the
-                    // snapshot and the live window used to miss the match
-                    // entirely - leaving the live window open AND spawning a
-                    // duplicate.
-                    var eClass = String(e.class || "").toLowerCase()
-                    for (var p = 0; p < profile.windows.length; p++) {
-                        if (matched[p]) continue
-                        if (eClass === String(profile.windows[p].class || "").toLowerCase()) {
-                            if (bestIdx === -1) bestIdx = p
-                            if (e.title === profile.windows[p].title) {
-                                bestIdx = p
-                                break
-                            }
-                        }
-                    }
+                    // Matching by class then title lives in the shared library, so
+                    // it is covered by test/restoreLogic.test.mjs - including the
+                    // case-insensitive comparison this path depends on, and the
+                    // "skip windows already claimed" rule that keeps repeated
+                    // scans from clobbering the pick with the last same-class
+                    // window.
+                    var bestIdx = Logic.matchProfileWindow(e, profile.windows, matched)
 
                     if (bestIdx >= 0) {
                         var target = profile.windows[bestIdx]
