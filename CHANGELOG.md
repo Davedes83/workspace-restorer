@@ -41,7 +41,7 @@ All notable changes to this project are documented in this file.
 - All profile-directory reads, writes, and deletions (create dir, list, save, load, delete) now go through a new hardened helper, `scripts/profile_store.py`, instead of shell `mkdir`/`ls`/`cat`/`rm` on user paths. Every file it touches is opened with `O_NOFOLLOW | O_NONBLOCK`, fstat-checked to be a regular file owned by the user, and read within a byte bound — a planted symlink or FIFO can no longer redirect a read or block the persistent shell on a stale profile path.
 - Profile saves stream their JSON over stdin (no temp files, no shell heredocs), and both save and load enforce cardinality limits (max 512 windows, 300 tabs per window, 256 profiles) plus a size cap, so a hand-edited or corrupt profile cannot drive an oversized launch.
 - Browser tab capture now reads the Chromium DevTools port file and Firefox/Chromium session files through the same held-descriptor bounded reader (no-follow, regular-file/ownership check, byte caps), bounds SNSS files, and feeds the `lz4jsoncat` fallback from a private 0600 temp copy with bounded chunked output — closing the check-then-open and unbounded-read gaps in capture.
-- Restore now revalidates a loaded profile's window/tab cardinality before generating any launch command (mirrored in `restoreLogic.mjs` and the bar widget).
+- Restore now revalidates a loaded profile's window/tab cardinality before generating any launch command (mirrored in the shared logic module and the bar widget).
 
 ## [1.1.1] - 2026-08-30
 
