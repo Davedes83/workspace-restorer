@@ -32,15 +32,11 @@ Panel {
     property bool showingNameInput: false
     property var _monitorsCaptured: []
 
-    readonly property color hoverBg: bar
-        ? Style.hoverFillFor(bar.foreground, Color.accent)
-        : Qt.darker(Color.bar.text, 1.1)
-    readonly property color selectedBg: bar
-        ? Style.selectedFillFor(bar.foreground, Color.accent)
-        : Qt.darker(Color.bar.text, 1.15)
-    // Destructive hover tint. Derived from the palette's urgent role rather
-    // than the old hardcoded "#663333", so it follows the active theme.
-    readonly property color deleteBg: Util.alpha(Color.urgent, 0.22)
+    // NOTE: the hand-rolled hoverBg / selectedBg / deleteBg fills that lived here
+    // are gone. They painted panel chrome with Color.bar.* - the BAR surface,
+    // not the popup surface - which is why every row read as the same flat
+    // shade as the background. CursorSurface and PanelActionButton now supply
+    // themed fills from the palette directly, so there is nothing to hand-roll.
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
@@ -174,255 +170,313 @@ Panel {
 
     // --- Popup Panel ---
 
+    // Cursor state for keyboard navigation. One shared cursor drives both the
+    // arrow/j/k keys and the mouse, so exactly one row is ever highlighted.
+    // -1 means "no row focused": the cursor activates on the first key press,
+    // so simply opening the panel does not steal a highlight.
+    property int cursorIndex: -1
+
+    function moveCursor(delta) {
+        if (root.profiles.length === 0) return
+        if (root.cursorIndex < 0) {
+            root.cursorIndex = delta > 0 ? 0 : root.profiles.length - 1
+        } else {
+            root.cursorIndex = Math.min(root.profiles.length - 1,
+                                        Math.max(0, root.cursorIndex + delta))
+        }
+    }
+
+    function cursorName() {
+        return root.cursorIndex >= 0 && root.cursorIndex < root.profiles.length
+            ? root.profiles[root.cursorIndex]
+            : null
+    }
+
+    // Row height and viewport cap for the profile list, both derived from
+    // Style so a theme that scales spacing stays self-consistent.
+    readonly property int profileRowHeight: Style.spacing.popupRowHeight + Style.space(10)
+    readonly property int maxProfileRows: 6
+
     KeyboardPanel {
         id: panel
         anchorItem: button
         owner: root
         bar: root.bar
         open: root.opened
-        contentWidth: 280
-        contentHeight: showingNameInput ? 220 : 400
+        // Keyboard focus has to be steered explicitly or the Keys handlers
+        // inside the surface never fire and the panel stays mouse-only.
+        focusTarget: keyCatcher
+        // Size to content and clamp to the screen, rather than a fixed
+        // 280x400 that silently clipped every profile past the seventh.
+        contentWidth: panel.fittedContentWidth(Style.space(340))
+        contentHeight: showingNameInput
+            ? panel.fittedContentHeight(nameColumn.implicitHeight)
+            : panel.fittedContentHeight(mainColumn.implicitHeight)
 
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
+            // The name field owns the keyboard while focused, so typing must
+            // not drive the profile cursor.
+            blocked: saveNameField.activeFocus
             onCloseRequested: root.close()
+            onTabRequested: function(direction) { root.switchPanel(direction) }
+            onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
+            onActivateRequested: if (root.cursorName()) root.doRestore(root.cursorName())
+            onDeleteRequested: if (root.cursorName()) root.confirmDelete(root.cursorName())
         }
 
+        // ---------- Main view ----------
+
         Column {
+            id: mainColumn
             anchors.fill: parent
-            anchors.margins: 12
-            spacing: 8
-            visible: !root.showingNameInput
+            spacing: Style.spacing.md
 
             PanelHero {
-                title: root.isRestoring ? "Restoring..." : "Workspace Restorer"
-            }
-
-            Rectangle {
                 width: parent.width
-                height: 1
-                color: Qt.darker(Color.bar.text, 1.15)
-            }
-
-            Rectangle {
-                width: parent.width
-                height: 36
-                radius: Style.cornerRadius
-                color: root.isRestoring ? Qt.darker(Color.bar.background, 1.15) : root.hoverBg
-
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 6
-
+                title: root.profiles.length === 1 ? "1 profile" : root.profiles.length + " profiles"
+                meta: root.isRestoring ? "restoring your layout"
+                                       : root.isSnapshotting ? "capturing windows"
+                                                             : "snapshot and restore"
+                iconComponent: Component {
                     Text {
-                        text: root.isSnapshotting ? "󰏇" : root.isRestoring ? "󰑐" : "󰅧"
-                        color: Color.bar.text
-                        font.pixelSize: 14
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    Text {
-                        text: root.isSnapshotting ? "Capturing..." : root.isRestoring ? "Restoring..." : "Take Snapshot"
-                        color: Color.bar.text
+                        text: root.isSnapshotting ? "󰓦" : root.isRestoring ? "󰅧" : "󰆞"
+                        color: Color.accent
                         font.family: Style.font.family
-                        font.pixelSize: Style.font.body
-                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: Style.font.display
                     }
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    hoverEnabled: true
-                    enabled: !root.isRestoring && !root.isSnapshotting
-                    onContainsMouseChanged: parent.color = containsMouse ? root.selectedBg : root.hoverBg
-                    onClicked: root.doSnapshot()
                 }
             }
 
-            PanelSectionHeader { text: "Profiles" }
+            PanelSeparator {}
 
-            Column {
+            Button {
                 width: parent.width
-                spacing: 4
+                height: Style.spacing.controlHeight + Style.space(6)
+                leftAlign: true
+                bordered: true
+                enabled: !root.isRestoring && !root.isSnapshotting
+                // A spinning glyph makes the in-flight state legible rather
+                // than just greyed out.
+                iconText: root.isSnapshotting ? "󰓦" : "󰅧"
+                iconSpinning: root.isSnapshotting
+                text: root.isSnapshotting ? "Capturing..."
+                    : root.isRestoring ? "Restoring..."
+                    : "Take Snapshot"
+                foreground: Color.foreground
+                onClicked: root.doSnapshot()
+            }
 
-                Repeater {
-                    model: root.profiles
+            PanelSectionHeader {
+                text: "Profiles"
+                visible: root.profiles.length > 0
+            }
 
-                    delegate: Rectangle {
-                        id: profileRow
-                        readonly property color restFill: Qt.darker(Color.bar.background, 1.05)
+            // ListView rather than Column+Repeater: profiles past the panel's
+            // height now scroll instead of being clipped out of reach.
+            ListView {
+                id: profileList
+                width: parent.width
+                // Cap by ROW COUNT, not by subtracting the parent's implicit
+                // height: mainColumn.implicitHeight sums its own children, one
+                // of which is this ListView, so that would be a circular
+                // binding (and left a dead gap below the last row).
+                height: Math.min(contentHeight, root.maxProfileRows * root.profileRowHeight)
+                visible: root.profiles.length > 0
+                clip: true
+                model: root.profiles
+                currentIndex: root.cursorIndex
+                boundsBehavior: Flickable.StopAtBounds
+                // Keep the keyboard cursor in view as it moves.
+                highlightMoveDuration: 120
+                onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
 
-                        width: parent.width
-                        height: 36
-                        radius: Style.cornerRadius
-                        color: restFill
+                ScrollBar.vertical: ScrollBar {
+                    policy: profileList.contentHeight > profileList.height
+                        ? ScrollBar.AsNeeded
+                        : ScrollBar.AlwaysOff
+                }
 
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: 6
-                            spacing: 6
+                delegate: CursorSurface {
+                    id: profileRow
+                    required property int index
+                    required property string modelData
 
-                            Text {
-                                text: root.profileIconFor(modelData)
-                                color: Qt.darker(Color.bar.text, 1.4)
-                                font.pixelSize: 13
-                                Layout.alignment: Qt.AlignVCenter
-                            }
+                    readonly property bool busy: root.isRestoring || root.isSnapshotting
 
-                            Text {
-                                text: modelData
-                                color: Color.bar.text
-                                font.family: Style.font.family
-                                font.pixelSize: Style.font.body
-                                Layout.alignment: Qt.AlignVCenter
-                                Layout.fillWidth: true
-                                elide: Text.ElideRight
+                    width: profileList.width
+                    height: root.profileRowHeight
+                    hasCursor: root.cursorIndex === index
+                    enabled: !busy
 
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    hoverEnabled: true
-                                    enabled: !root.isRestoring && !root.isSnapshotting
-                                    onContainsMouseChanged: profileRow.color = containsMouse ? root.hoverBg : profileRow.restFill
-                                    onClicked: root.doRestore(modelData)
-                                }
-                            }
+                    // CursorSurface is visual chrome only - it has no click
+                    // handling - so the MouseArea lives here. Hover drives the
+                    // SHARED cursor rather than a local highlight, which is
+                    // what keeps exactly one row lit for mouse and keyboard.
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        hoverEnabled: true
+                        enabled: !profileRow.busy
+                        onEntered: root.cursorIndex = profileRow.index
+                        onClicked: root.doRestore(profileRow.modelData)
+                    }
 
-                            Text {
-                                text: "󰆴"
-                                color: Qt.darker(Color.bar.text, 1.4)
-                                font.pixelSize: 13
-                                Layout.alignment: Qt.AlignVCenter
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: Style.spacing.rowPaddingX
+                        anchors.rightMargin: Style.spacing.xs
+                        spacing: Style.spacing.controlGap
 
-                                // Referenced by id, not by walking the parent chain: the
-                                // chain here is MouseArea -> Text -> RowLayout, and
-                                // RowLayout has no `color` property to assign to.
-                                MouseArea {
-                                    id: deleteHotspot
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    hoverEnabled: true
-                                    enabled: !root.isRestoring && !root.isSnapshotting
-                                    onContainsMouseChanged: profileRow.color = containsMouse ? root.deleteBg : profileRow.restFill
-                                    onClicked: root.doDelete(modelData)
-                                }
-                            }
+                        Text {
+                            text: root.profileIconFor(modelData)
+                            color: Qt.darker(Color.foreground, 1.4)
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.icon
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+
+                        Text {
+                            text: modelData
+                            color: Color.foreground
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.body
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                        }
+
+                        PanelActionButton {
+                            iconText: "󰆴"
+                            // Themed destructive tint instead of the old
+                            // hardcoded #663333, which ignored the palette.
+                            hoverColor: Color.urgent
+                            foreground: Qt.darker(Color.foreground, 1.4)
+                            enabled: !profileRow.busy
+                            tooltipText: "Delete profile"
+                            onClicked: root.confirmDelete(modelData)
                         }
                     }
                 }
             }
 
-            Item { width: 1; height: 4 }
+            // Empty state: an empty list used to render as a blank void under
+            // the header with no explanation.
+            Column {
+                width: parent.width
+                spacing: Style.spacing.xs
+                visible: root.profiles.length === 0
+
+                Text {
+                    width: parent.width
+                    text: "No profiles yet"
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Text {
+                    width: parent.width
+                    text: "Take a snapshot to save your current window layout."
+                    color: Qt.darker(Color.foreground, 1.5)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                }
+            }
+
+            PanelSeparator {
+                visible: root.lastAction !== ""
+            }
 
             Text {
-                text: root.lastAction
-                color: Qt.darker(Color.bar.text, 1.4)
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                font.italic: true
-                visible: root.lastAction !== ""
                 width: parent.width
+                text: root.lastAction
+                visible: root.lastAction !== ""
+                color: Qt.darker(Color.foreground, 1.4)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                font.italic: true
                 horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
             }
         }
 
-        // --- Name Input View ---
+        // ---------- Name input view ----------
 
         Column {
+            id: nameColumn
             anchors.fill: parent
-            anchors.margins: 12
-            spacing: 10
+            spacing: Style.spacing.md
             visible: root.showingNameInput
 
             PanelHero {
+                width: parent.width
                 title: "Save Snapshot"
-            }
-
-            Rectangle {
-                width: parent.width
-                height: 1
-                color: Qt.darker(Color.bar.text, 1.15)
-            }
-
-            TextField {
-                id: saveNameField
-                width: parent.width
-                height: 36
-                placeholderText: "Profile name"
-                color: Color.bar.text
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                leftPadding: 10
-                background: Rectangle {
-                    color: Qt.darker(Color.bar.background, 1.08)
-                    radius: Style.cornerRadius
-                    border.color: Qt.darker(Color.bar.text, 1.15)
-                    border.width: 1
-                }
-                Keys.onReturnPressed: confirmSave()
-                Keys.onEnterPressed: confirmSave()
-            }
-
-            Rectangle {
-                id: saveButton
-                width: parent.width
-                height: 36
-                radius: Style.cornerRadius
-                color: root.hoverBg
-
-                Text {
-                    anchors.centerIn: parent
-                    text: "  Save"
-                    color: Color.bar.text
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.body
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    hoverEnabled: true
-                    // Referenced by id: the parent chain here is
-                    // MouseArea -> Rectangle -> Column, and Column has no
-                    // `color` property, so `parent.parent.color` threw.
-                    onContainsMouseChanged: saveButton.color = containsMouse ? root.selectedBg : root.hoverBg
-                    onClicked: confirmSave()
-                }
-            }
-
-            Rectangle {
-                id: cancelButton
-                readonly property color restFill: Qt.darker(Color.bar.background, 1.05)
-
-                width: parent.width
-                height: 36
-                radius: Style.cornerRadius
-                color: restFill
-
-                Text {
-                    anchors.centerIn: parent
-                    text: "Cancel"
-                    color: Qt.darker(Color.bar.text, 1.5)
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.body
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    hoverEnabled: true
-                    // See saveButton: assigning to the enclosing Column's
-                    // `color` threw a TypeError on every hover.
-                    onContainsMouseChanged: cancelButton.color = containsMouse ? Qt.darker(Color.bar.text, 1.1) : cancelButton.restFill
-                    onClicked: {
-                        root.showingNameInput = false
-                        root.pendingSnapshot = null
-                        root.lastAction = "Snapshot discarded"
+                meta: (root.pendingSnapshot ? root.pendingSnapshot.windows.length : 0) + " window(s) captured"
+                iconComponent: Component {
+                    Text {
+                        text: "󰅧"
+                        color: Color.accent
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.display
                     }
                 }
             }
+
+            PanelSeparator {}
+
+            // qs.Ui.TextField themes fill, border, focus ring and placeholder
+            // itself; the hand-rolled `background:` override it replaced did
+            // none of that.
+            TextField {
+                id: saveNameField
+                width: parent.width
+                placeholderText: "Profile name"
+                Keys.onReturnPressed: root.confirmSave()
+                Keys.onEnterPressed: root.confirmSave()
+            }
+
+            Button {
+                width: parent.width
+                height: Style.spacing.controlHeight + Style.space(6)
+                text: "Save"
+                leftAlign: true
+                onClicked: root.confirmSave()
+            }
+
+            Button {
+                width: parent.width
+                height: Style.spacing.controlHeight + Style.space(6)
+                text: "Cancel"
+                leftAlign: true
+                onClicked: root.discardSnapshot()
+            }
+        }
+    }
+
+    // Delete goes through a confirmation. A single unconfirmed click on a
+    // 22px icon used to destroy a profile irrecoverably.
+    ConfirmDialog {
+        id: deleteDialog
+        parent: panel
+        anchors.fill: parent
+        message: "Delete profile?\n\n" + (root.pendingDeleteName || "")
+        cancelText: "Cancel"
+        confirmText: "Delete"
+        onConfirmed: {
+            var name = root.pendingDeleteName
+            root.pendingDeleteName = null
+            deleteDialog.opened = false
+            if (name) root.doDelete(name)
+        }
+        onCanceled: {
+            root.pendingDeleteName = null
+            deleteDialog.opened = false
         }
     }
 
