@@ -17,13 +17,17 @@ runInContext(readFileSync(LOGIC_PATH, "utf8"), logic)
 const {
     sanitizeProfileName,
     shellArg,
-    sanitizeLaunchCommand,
+    trustedLaunchCommand,
+    tokenizeExecLine,
+    isForbiddenLauncher,
+    launcherBasename,
+    normalizeClassKey,
+    isTrustedLocalPath,
     safeWorkspace,
     safeClass,
     numOr,
     profileIconFor,
     generateDefaultName,
-    cleanCmd,
     browserTypeForClass,
     safeUrl,
     buildTabUrls,
@@ -98,35 +102,149 @@ test("shellArg handles null/undefined as empty string", () => {
     assert.equal(shellArg(undefined), "''")
 })
 
-// --- sanitizeLaunchCommand ---
+// --- trustedLaunchCommand ---
 
-test("sanitizeLaunchCommand builds safe quoted command", () => {
-    assert.equal(sanitizeLaunchCommand("nautilus --new-window"), "'nautilus' '--new-window'")
+const IDX = {
+    "wmclass:firefox": "/usr/lib/firefox/firefox",
+    "name:chromium": "/usr/bin/chromium",
+    "name:code": "/usr/share/code/code --unity-launch %F",
+}
+
+test("trustedLaunchCommand uses the trusted desktop entry, not app argv", () => {
+    assert.equal(trustedLaunchCommand("firefox", IDX), "'/usr/lib/firefox/firefox'")
+    assert.equal(trustedLaunchCommand("chromium", IDX), "'/usr/bin/chromium'")
 })
 
-test("sanitizeLaunchCommand accepts ./rel paths and names", () => {
-    assert.equal(sanitizeLaunchCommand("./bin/app run"), "'./bin/app' 'run'")
-    assert.equal(sanitizeLaunchCommand("app"), "'app'")
+test("trustedLaunchCommand strips field codes from the Exec line", () => {
+    assert.equal(trustedLaunchCommand("code", IDX), "'/usr/share/code/code' '--unity-launch'")
 })
 
-test("sanitizeLaunchCommand rejects unsafe executables", () => {
-    for (const raw of ["$(evil)", "evil$(x)", "evil;ls", "evil|cat", "evil`x`", "evil&", "evil>out", "evil<in", "evil'", "1bad-token!"]) {
-        assert.equal(sanitizeLaunchCommand(raw), "", `should reject: ${raw}`)
+test("trustedLaunchCommand falls back to the class name, never to argv", () => {
+    // No entry for this class: the command is the class name itself.
+    assert.equal(trustedLaunchCommand("SomeApp", {}), "'someapp'")
+    assert.equal(trustedLaunchCommand("SomeApp", undefined), "'someapp'")
+})
+
+test("trustedLaunchCommand prefers StartupWMClass over the file name", () => {
+    const idx = { "wmclass:jetbrains": "/opt/idea/bin/idea.sh", "name:jetbrains": "/usr/bin/wrong" }
+    assert.equal(trustedLaunchCommand("JetBrains", idx), "'/opt/idea/bin/idea.sh'")
+})
+
+test("trustedLaunchCommand refuses an interpreter named by a desktop entry", () => {
+    // The registry is trusted, but a hand-installed entry can still point at a
+    // shell. Restoring must never run one.
+    for (const exe of ["sh", "/bin/bash", "/usr/bin/env python3", "/usr/bin/zsh -f",
+                       "/bin/dash", "/usr/bin/nohup", "/usr/bin/xargs rm",
+                       "/usr/bin/flatpak run x", "/usr/bin/sudo", "/usr/bin/perl"]) {
+        assert.equal(trustedLaunchCommand("evil", { "name:evil": exe }), "",
+                     `should refuse interpreter entry: ${exe}`)
     }
 })
 
-test("sanitizeLaunchCommand accepts multi-arg valid commands", () => {
-    assert.equal(sanitizeLaunchCommand("x y"), "'x' 'y'")
+test("trustedLaunchCommand strips a leading env/assignment prefix", () => {
+    assert.equal(trustedLaunchCommand("app", { "name:app": "env FOO=bar /usr/bin/app --x" }),
+                 "'/usr/bin/app' '--x'")
+    assert.equal(trustedLaunchCommand("app", { "name:app": "env sh -c evil" }), "")
+    assert.equal(trustedLaunchCommand("app", { "name:app": "env" }), "")
+    assert.equal(trustedLaunchCommand("app", { "name:app": "A=1 B=2" }), "")
 })
 
-test("sanitizeLaunchCommand falls back to class when empty", () => {
-    assert.equal(sanitizeLaunchCommand("", "Firefox"), "'firefox'")
-    assert.equal(sanitizeLaunchCommand(null, "Code"), "'code'")
+test("trustedLaunchCommand refuses an executable with shell metacharacters", () => {
+    // Note: "a b" is NOT here - in an Exec line that is program `a` with
+    // argument `b`, which is legitimate and harmless.
+    for (const exe of ["$(evil)", "evil;ls", "a|b", "a`b`", "a&b", "a>b", "-weird", "~/bin/app"]) {
+        assert.equal(trustedLaunchCommand("evil", { "name:evil": exe }), "",
+                     `should reject executable: ${exe}`)
+    }
 })
 
-test("sanitizeLaunchCommand returns empty on no input", () => {
-    assert.equal(sanitizeLaunchCommand("", ""), "")
-    assert.equal(sanitizeLaunchCommand("   ", "   "), "")
+test("trustedLaunchCommand rejects unusable input", () => {
+    assert.equal(trustedLaunchCommand("", IDX), "")
+    assert.equal(trustedLaunchCommand(null, IDX), "")
+    assert.equal(trustedLaunchCommand("../../etc/passwd", IDX), "")
+    assert.equal(trustedLaunchCommand("a".repeat(200), IDX), "")
+    assert.equal(trustedLaunchCommand("app", { "name:app": "" }), "'app'")
+})
+
+test("trustedLaunchCommand quotes every token", () => {
+    assert.equal(trustedLaunchCommand("app", { "name:app": "/usr/bin/app --flag 'quoted val'" }),
+                 "'/usr/bin/app' '--flag' 'quoted val'")
+})
+
+// --- tokenizeExecLine ---
+//
+// The function runs inside a vm context, so the arrays it returns carry that
+// realm's Array.prototype. Array.from() re-homes them before comparison.
+
+test("tokenizeExecLine splits on whitespace", () => {
+    assert.deepEqual(Array.from(tokenizeExecLine("/usr/bin/app --a --b")),
+                     ["/usr/bin/app", "--a", "--b"])
+    assert.deepEqual(Array.from(tokenizeExecLine("  spaced   out  ")),
+                     ["spaced", "out"])
+})
+
+test("tokenizeExecLine honours quotes and escapes", () => {
+    assert.deepEqual(Array.from(tokenizeExecLine(`app "a b" 'c d'`)),
+                     ["app", "a b", "c d"])
+    assert.deepEqual(Array.from(tokenizeExecLine("app a\\ b")), ["app", "a b"])
+})
+
+test("tokenizeExecLine returns null on malformed input", () => {
+    assert.equal(tokenizeExecLine("app 'unterminated"), null)
+    assert.equal(tokenizeExecLine('app "unterminated'), null)
+    assert.equal(tokenizeExecLine("trailing\\"), null)
+    assert.equal(tokenizeExecLine(""), null)
+    assert.equal(tokenizeExecLine(null), null)
+    assert.equal(tokenizeExecLine("x".repeat(5000)), null)
+    assert.equal(tokenizeExecLine(Array.from({ length: 100 }, () => "t").join(" ")), null)
+})
+
+// --- forbidden launchers ---
+
+test("launcherBasename strips directories and case", () => {
+    assert.equal(launcherBasename("/bin/BASH"), "bash")
+    assert.equal(launcherBasename("sh"), "sh")
+    assert.equal(launcherBasename(null), "")
+})
+
+test("isForbiddenLauncher covers shells, interpreters and shims", () => {
+    for (const bad of ["sh", "bash", "zsh", "env", "python3", "perl", "node",
+                       "flatpak", "sudo", "xargs", "nohup", "busybox", "Rscript"]) {
+        assert.equal(isForbiddenLauncher(bad), true, bad)
+        assert.equal(isForbiddenLauncher("/usr/bin/" + bad), true, bad)
+    }
+    assert.equal(isForbiddenLauncher("/usr/bin/chromium"), false)
+    assert.equal(isForbiddenLauncher("firefox"), false)
+})
+
+// --- normalizeClassKey ---
+
+test("normalizeClassKey lowercases and validates", () => {
+    assert.equal(normalizeClassKey("Firefox"), "firefox")
+    assert.equal(normalizeClassKey("  code  "), "code")
+    assert.equal(normalizeClassKey("a.b-c_d"), "a.b-c_d")
+    assert.equal(normalizeClassKey("bad class"), "")
+    assert.equal(normalizeClassKey("bad;class"), "")
+    assert.equal(normalizeClassKey("$(x)"), "")
+    assert.equal(normalizeClassKey(null), "")
+})
+
+// --- isTrustedLocalPath ---
+
+test("isTrustedLocalPath accepts paths under home", () => {
+    assert.equal(isTrustedLocalPath("/home/u/.config/chromium", "/home/u"), true)
+    assert.equal(isTrustedLocalPath("/home/u", "/home/u"), true)
+    assert.equal(isTrustedLocalPath("/home/u2/.config", "/home/u"), false)
+})
+
+test("isTrustedLocalPath rejects traversal, relative and tainted paths", () => {
+    assert.equal(isTrustedLocalPath("/home/u/../etc/shadow", "/home/u"), false)
+    assert.equal(isTrustedLocalPath("relative/path", "/home/u"), false)
+    assert.equal(isTrustedLocalPath("/home/u/~/x", "/home/u"), false)
+    assert.equal(isTrustedLocalPath("/home/u/a\nb", "/home/u"), false)
+    assert.equal(isTrustedLocalPath("", "/home/u"), false)
+    assert.equal(isTrustedLocalPath(null, "/home/u"), false)
+    assert.equal(isTrustedLocalPath("/etc/passwd", ""), true)
 })
 
 // --- safeWorkspace ---
@@ -201,19 +319,6 @@ test("generateDefaultName produces snapshot-YYYYMMDD-HHMM", () => {
     const name = generateDefaultName(d)
     assert.match(name, /^snapshot-\d{8}-\d{4}$/)
     assert.equal(name, "snapshot-20260829-0905")
-})
-
-// --- cleanCmd ---
-
-test("cleanCmd collapses whitespace and trims", () => {
-    assert.equal(cleanCmd("  a    b  "), "a b")
-    assert.equal(cleanCmd("single  word"), "single word")
-})
-
-test("cleanCmd returns null for empty/invalid", () => {
-    assert.equal(cleanCmd(""), null)
-    assert.equal(cleanCmd("   "), null)
-    assert.equal(cleanCmd(null), null)
 })
 
 // --- browserTypeForClass ---

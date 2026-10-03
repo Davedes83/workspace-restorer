@@ -28,6 +28,13 @@ Panel {
     // no-follow-opens, fstats for regular/user-owned files, bounds sizes and
     // cardinality, and routes save payloads over stdin (no temp files).
     readonly property string storeScript: Qt.resolvedUrl("scripts/profile_store.py").toString().replace(/^file:\/\//, "")
+    // Path to the trusted desktop-entry reader. Restore resolves every launch
+    // command through it, never through the snapshot's captured argv.
+    readonly property string desktopScript: Qt.resolvedUrl("scripts/desktop_launch.py").toString().replace(/^file:\/\//, "")
+    // Launch-command index, keyed "wmclass:<class>" / "name:<class>". Read
+    // once at start-up from the desktop database; if it fails we fall back to
+    // launching by bare class name, which is still not app-controlled.
+    property var launcherIndex: ({})
     property var pendingSnapshot: null
     property bool showingNameInput: false
     property var _monitorsCaptured: []
@@ -43,6 +50,32 @@ Panel {
 
     Component.onCompleted: {
         ensureProfileDir()
+        loadLauncherIndex()
+    }
+
+    // Read the trusted desktop-entry database into launcherIndex. Runs once at
+    // start-up: it is a bounded read of a few hundred small files, and the
+    // result only changes when the user installs or removes an application.
+    // A failure here is not fatal - trustedLaunchCommand falls back to the
+    // window class name.
+    function loadLauncherIndex() {
+        launcherIndexProc.running = true
+    }
+
+    Process {
+        id: launcherIndexProc
+        command: ["python3", root.desktopScript]
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                try {
+                    var parsed = JSON.parse(text || "{}")
+                    if (parsed && typeof parsed === "object") root.launcherIndex = parsed
+                } catch(e) {
+                    console.warn("WSRESTORE launcher index unavailable:", String(e))
+                }
+            }
+        }
     }
 
     // Dismissing the panel while the save prompt is open used to leave the
@@ -97,7 +130,7 @@ Panel {
 
     function shellArg(s) { return Logic.shellArg(s) }
 
-    function sanitizeLaunchCommand(raw, fallbackClass) { return Logic.sanitizeLaunchCommand(raw, fallbackClass) }
+    function trustedLaunchCommand(cls) { return Logic.trustedLaunchCommand(cls, root.launcherIndex) }
 
     function safeUrl(url) { return Logic.safeUrl(url) }
 
@@ -562,7 +595,7 @@ Panel {
                     }
                     snapCmdlinesProc._clients = clients
                     // Robust per-PID capture. Each PID emits one line of
-                    // "PID<TAB>cmdline<TAB>cwd". Fields are matched BY PID (not
+                    // "PID<TAB>cmdline". Fields are matched BY PID (not
                     // by array index), so a failed /proc read can never shift
                     // other windows' data (the old plain-text approach slid on
                     // any /proc failure). Tabs/newlines inside values are
@@ -571,8 +604,7 @@ Panel {
                         "pids=\"" + pids.join(" ") + "\"; " +
                         "for p in $pids; do " +
                         "  cmd=$(cat /proc/$p/cmdline 2>/dev/null | tr '\\0' ' ' | tr '\\t\\n' '  ' | sed 's/ *$//'); " +
-                        "  cwd=$(readlink /proc/$p/cwd 2>/dev/null | tr '\\t\\n' '  '); " +
-                        "  printf '%s\\t%s\\t%s\\n' \"$p\" \"$cmd\" \"$cwd\"; " +
+                        "  printf '%s\\t%s\\n' \"$p\" \"$cmd\"; " +
                         "done"]
                     snapCmdlinesProc.running = true
                 } catch(e) {
@@ -605,21 +637,19 @@ Panel {
                         if (!line) continue
                         var parts = line.split("\t")
                         if (parts.length >= 1) {
-                            var rec = { pid: parts[0], cmdline: parts[1] || "", cwd: parts[2] || "" }
+                            var rec = { pid: parts[0], cmdline: parts[1] || "" }
                             infoMap[rec.pid] = rec
                         }
                     }
                     for (var i = 0; i < clients.length; i++) {
                         var info = infoMap[String(clients[i].pid)]
                         clients[i]._cmdline = (info && info.cmdline) ? info.cmdline.trim() : null
-                        clients[i]._cwd = (info && info.cwd) ? info.cwd.trim() : null
                     }
                 } catch(e) {
                     // A single unparsable line must not lose every window's
-                    // /proc data - null the two fields and carry on.
+                    // /proc data - null the field and carry on.
                     for (var k = 0; k < clients.length; k++) {
                         clients[k]._cmdline = null
-                        clients[k]._cwd = null
                     }
                 }
                 snapMonitorsProc._clients = clients
@@ -646,31 +676,21 @@ Panel {
 
                     var windows = []
 
-                    // Clean a captured /proc cmdline into a safe relaunch string:
-                    // collapses internal whitespace (single spaces) and trims.
-                    function cleanCmd(raw) {
-                        if (!raw) return null
-                        var v = raw.replace(/\s+/g, " ").trim()
-                        return v.length ? v : null
-                    }
-
-                    // Command cache per PID. Multiple split-screen windows from
-                    // one process (e.g. two nautilus windows sharing a PID)
-                    // must ALL get the same launch command - otherwise a later
-                    // window falls back to className, which can't reopen it.
-                    // For single-instance apps the captured cmdline already
-                    // carries the right flag (e.g. "nautilus --new-window").
-                    var pidCmd = {}
-
+                    // SECURITY: the captured `/proc/<pid>/cmdline` is deliberately
+                    // NOT stored in the profile. It is written by the application
+                    // itself, so persisting it as a relaunch command lets any app
+                    // choose what the restorer later executes on the host - a
+                    // sandboxed app can set its own argv to `sh -c ...` and escape
+                    // its sandbox. Restore resolves commands from the trusted
+                    // desktop-entry database by window class instead; see
+                    // restoreLogic.js trustedLaunchCommand.
+                    //
+                    // The cmdline is still read during the snapshot for one
+                    // narrow, non-executing purpose: locating a browser's
+                    // profile directory for tab capture (below).
                     for (var i = 0; i < clients.length; i++) {
                         var c = clients[i]
                         var monName = monMap[c.monitor] || String(c.monitor)
-
-                        var cmd = pidCmd[c.pid]
-                        if (cmd === undefined) {
-                            cmd = cleanCmd(c._cmdline)
-                            pidCmd[c.pid] = cmd === null ? null : cmd
-                        }
 
                         // Browser detection: mark the window so the tab-capture
                         // pass (snapTabsProc) can enrich it later, and resolve
@@ -679,6 +699,7 @@ Panel {
                         // right window and restore can reopen them in place.
                         var btype = root.browserTypeForClass(c.class)
                         var bprofile = btype ? root.resolveBrowserProfile(btype, c._cmdline) : null
+                        if (bprofile !== null && !Logic.isTrustedLocalPath(bprofile, Quickshell.env("HOME"))) bprofile = null
 
                         windows.push({
                             "class": c.class,
@@ -689,8 +710,6 @@ Panel {
                             "workspaceId": c.workspace.id,
                             "monitor": monName,
                             "monitorId": c.monitor,
-                            "command": cmd,
-                            "cwd": c._cwd ? c._cwd.trim() : null,
                             "position": [c.at[0], c.at[1]],
                             "size": [c.size[0], c.size[1]],
                             "splitRatio": c.splitratio,
@@ -1188,7 +1207,7 @@ Panel {
                         lines.push("echo \"[launch] skipped unsafe metadata\" >> \"$LOGFILE\"")
                         continue
                     }
-                    var cmd = root.sanitizeLaunchCommand(w.command, cls)
+                    var cmd = root.trustedLaunchCommand(cls)
 
                     // For browser windows with captured tabs, append the page
                     // For browser windows with captured tabs, produce the launch

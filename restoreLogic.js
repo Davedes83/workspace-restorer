@@ -50,19 +50,208 @@ function shellArg(s) {
     return "'" + String(s).replace(/'/g, "'\\''") + "'"
 }
 
-// Build a safe relaunch command line from an editable profile "command".
-// The executable token is restricted to a plain path/name (no shell
-// metacharacters) and every token is shell-quoted, so a crafted profile cannot
-// smuggle in $(...), backticks, ;, |, redirections, etc. Returns a
-// ready-to-execute command string, or "" if nothing usable.
-function sanitizeLaunchCommand(raw, fallbackClass) {
-    var src = raw || (fallbackClass ? fallbackClass.toLowerCase() : "")
-    var tokens = String(src).split(/\s+/).filter(function (t) { return t.length > 0 })
-    if (tokens.length === 0) return ""
-    // First token is the executable: must be a plain name or ./-relative path.
-    if (!/^(\.?\/)?[A-Za-z0-9_][A-Za-z0-9_.+/-]*$/.test(tokens[0])) return ""
+// ---------------------------------------------------------------------------
+// Trusted launcher resolution
+// ---------------------------------------------------------------------------
+
+// Normalise a WM class into a desktop-database lookup key. Hyphen/underscore
+// and case differences between `StartupWMClass` and the reported class are
+// routine, so compare on a squashed alphanumeric form.
+function normalizeClassKey(cls) {
+    if (typeof cls !== "string") return ""
+    var s = cls.trim().toLowerCase()
+    if (s.length === 0 || s.length > 128) return ""
+    if (!/^[a-z0-9._-]+$/.test(s)) return ""
+    return s
+}
+
+// Basenames that must never be a restore target: shells and general-purpose
+// interpreters (which turn any argv into arbitrary host execution), plus the
+// shims whose whole job is to spawn something else. The primary control is
+// that commands come from the trusted desktop database rather than app argv;
+// this list is the second layer, so a hand-installed entry pointing at `sh` is
+// still refused.
+var FORBIDDEN_LAUNCHERS = {
+    "sh": 1, "bash": 1, "dash": 1, "ash": 1, "zsh": 1, "ksh": 1, "mksh": 1,
+    "pdksh": 1, "fish": 1, "csh": 1, "tcsh": 1, "busybox": 1, "elvish": 1,
+    "xonsh": 1, "nu": 1, "oil": 1, "rc": 1, "env": 1, "command": 1,
+    "exec": 1, "eval": 1, "source": 1, "xargs": 1, "nohup": 1, "setsid": 1,
+    "stdbuf": 1, "timeout": 1, "nice": 1, "ionice": 1, "chrt": 1,
+    "script": 1, "unbuffer": 1, "sudo": 1, "doas": 1, "pkexec": 1, "su": 1,
+    "runuser": 1, "setpriv": 1, "flatpak": 1, "flatpak-session-helper": 1,
+    "bwrap": 1, "bubblewrap": 1, "proot": 1, "systemd-run": 1,
+    "systemd-runner": 1, "dbus-run-session": 1, "ssh": 1, "sftp": 1,
+    "scp": 1, "mosh": 1, "telnet": 1, "nc": 1, "ncat": 1, "socat": 1,
+    "curl": 1, "wget": 1, "aria2c": 1, "python": 1, "python2": 1,
+    "python3": 1, "perl": 1, "ruby": 1, "node": 1, "deno": 1, "bun": 1,
+    "php": 1, "lua": 1, "luajit": 1, "tclsh": 1, "wish": 1, "java": 1,
+    "jshell": 1, "scala": 1, "kotlin": 1, "groovy": 1, "r": 1, "rscript": 1,
+    "julia": 1, "ocaml": 1, "ghc": 1, "runghc": 1, "mono": 1, "csi": 1,
+    "csc": 1, "dotnet": 1, "pwsh": 1, "powershell": 1, "awk": 1, "gawk": 1,
+    "mawk": 1, "sed": 1, "expect": 1, "find": 1, "install": 1,
+    "ldconfig": 1, "ld.so": 1, "tar": 1, "unzip": 1, "zip": 1, "7z": 1,
+    "dd": 1, "chmod": 1, "chown": 1, "mount": 1, "umount": 1, "modprobe": 1,
+    "insmod": 1, "kill": 1, "killall": 1, "pkill": 1, "shutdown": 1,
+    "reboot": 1, "systemctl": 1, "journalctl": 1, "loginctl": 1,
+    "screen": 1, "tmux": 1, "byobu": 1, "dtach": 1, "abduco": 1, "watch": 1,
+    "strace": 1, "ltrace": 1, "gdb": 1, "lldb": 1, "make": 1, "cmake": 1,
+    "ninja": 1, "meson": 1, "gcc": 1, "cc": 1, "ld": 1, "as": 1, "git": 1,
+    "hg": 1, "svn": 1, "pip": 1, "pip3": 1, "pipx": 1, "npm": 1, "npx": 1,
+    "pnpm": 1, "yarn": 1, "bunx": 1, "cargo": 1, "go": 1, "gh": 1,
+    "docker": 1, "podman": 1, "kubectl": 1, "snap": 1, "steam": 1,
+    "lutris": 1, "heroic": 1, "wine": 1, "gio": 1, "gapplication": 1,
+    "gtk-launch": 1, "kde-open": 1, "kde-open5": 1, "exo-open": 1,
+    "xdg-open": 1, "gvfs-open": 1, "www-browser": 1, "x-www-browser": 1,
+    "sensible-browser": 1, "dbus-launch": 1, "gdbus": 1, "busctl": 1
+}
+
+// Var=VALUE prefix permitted ahead of the real program in an Exec line.
+var ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/
+
+// Desktop field codes. Stripped rather than expanded: %U/%F would splice
+// attacker-supplied URLs or filenames into a trusted binary's argv.
+var DESKTOP_FIELD_CODE_RE = /%%|%[fFuUickdDNvVm]/g
+
+// The program token: a plain absolute path, ./ relative path, or bare name.
+// No shell metacharacters, no spaces, no leading dash.
+var EXECUTABLE_PATH_RE = /^(\.?\/)?[A-Za-z0-9_][A-Za-z0-9_.+\/-]*$/
+
+function launcherBasename(token) {
+    if (typeof token !== "string") return ""
+    var s = token.trim()
+    var cut = s.lastIndexOf("/")
+    if (cut !== -1) s = s.slice(cut + 1)
+    return s.toLowerCase()
+}
+
+function isForbiddenLauncher(token) {
+    return FORBIDDEN_LAUNCHERS[launcherBasename(token)] === 1
+}
+
+// Split a desktop-file Exec line into argv tokens, honouring single quotes,
+// double quotes and backslash escapes the way a shell would - so
+// `Exec=/usr/bin/foo --bar "a b"` yields three tokens, not four. Returns null
+// if the line is unterminated or oversized.
+function tokenizeExecLine(line) {
+    if (typeof line !== "string") return null
+    if (line.length === 0 || line.length > 4096) return null
+    var tokens = []
+    var current = ""
+    var has = false
+    var i = 0
+    while (i < line.length) {
+        var ch = line.charAt(i)
+        if (ch === "'") {
+            var close = line.indexOf("'", i + 1)
+            if (close === -1) return null
+            current += line.slice(i + 1, close)
+            has = true
+            i = close + 1
+            continue
+        }
+        if (ch === '"') {
+            i++
+            while (i < line.length && line.charAt(i) !== '"') {
+                if (line.charAt(i) === "\\" && i + 1 < line.length) i++
+                current += line.charAt(i)
+                i++
+            }
+            if (i >= line.length) return null
+            has = true
+            i++
+            continue
+        }
+        if (ch === "\\") {
+            if (i + 1 >= line.length) return null
+            current += line.charAt(i + 1)
+            has = true
+            i += 2
+            continue
+        }
+        if (/\s/.test(ch)) {
+            if (has) tokens.push(current)
+            current = ""
+            has = false
+            i++
+            continue
+        }
+        current += ch
+        has = true
+        i++
+    }
+    if (has) tokens.push(current)
+    if (tokens.length > 64) return null
+    for (var t = 0; t < tokens.length; t++) {
+        if (tokens[t].length > 4096) return null
+    }
+    return tokens
+}
+
+// Build a safe relaunch command line for a window.
+//
+// SECURITY: the app's captured argv is NEVER an input here. `/proc/<pid>/cmdline`
+// is written by the application itself, so restoring it hands an untrusted
+// process a say in what runs on the host - a sandboxed app can simply set its
+// own argv to `sh -c ...` and have the restorer execute that outside its
+// sandbox. Quoting cannot fix that, because the entire command is the
+// untrusted value rather than an argument embedded in a trusted one.
+//
+// Instead the executable comes from the trusted desktop-entry database (see
+// scripts/desktop_launch.py), keyed by the window's WM class, with the class
+// name itself as the fallback. `index` maps "wmclass:<class>" /
+// "name:<class>" to the raw Exec line registered by the desktop.
+//
+// Returns a ready-to-execute, fully quoted command string, or "" when nothing
+// trustworthy can be resolved.
+function trustedLaunchCommand(cls, index) {
+    var key = normalizeClassKey(cls)
+    if (!key) return ""
+
+    var raw = null
+    if (index && typeof index === "object") {
+        var candidate = index["wmclass:" + key]
+        if (typeof candidate === "string" && candidate.length > 0) {
+            raw = candidate
+        } else {
+            candidate = index["name:" + key]
+            if (typeof candidate === "string" && candidate.length > 0) raw = candidate
+        }
+    }
+
+    // No installed entry: fall back to the class name as a bare command name.
+    // This is still not attacker-chosen in any meaningful way - it must match
+    // the WM class - and it is passed through the same denylist below.
+    //
+    // Field codes are stripped here as well as in the collector, so this layer
+    // does not depend on the helper having done it: %U would append attacker-
+    // chosen URLs to a trusted binary, which is exactly the kind of expansion
+    // we refuse to inherit.
+    var tokens = raw !== null ? tokenizeExecLine(raw.replace(DESKTOP_FIELD_CODE_RE, " ")) : [key]
+    if (tokens === null || tokens.length === 0) return ""
+
+    // An Exec line may start with `env` and/or VAR=VALUE assignments; the
+    // program we care about is the first token after them.
+    var start = 0
+    while (
+        start < tokens.length
+        && (tokens[start] === "env" || ENV_ASSIGN_RE.test(tokens[start]))
+    ) start++
+    if (start >= tokens.length) return ""
+
+    var exe = tokens[start]
+    // Defence in depth against an interpreter or a process-spawning shim. The
+    // desktop database is trusted, but a hand-installed entry can still point
+    // at a shell, and restoring must never run one.
+    if (isForbiddenLauncher(exe)) return ""
+    if (!EXECUTABLE_PATH_RE.test(exe)) return ""
+
     var out = []
-    for (var i = 0; i < tokens.length; i++) out.push(shellArg(tokens[i]))
+    for (var i = start; i < tokens.length; i++) {
+        var t = tokens[i]
+        if (t.length === 0 || t.length > 4096) return ""
+        if (/[\x00]/.test(t)) return ""
+        out.push(shellArg(t))
+    }
     return out.join(" ")
 }
 
@@ -126,14 +315,6 @@ function generateDefaultName(date) {
         "-" + pad(d.getHours()) + pad(d.getMinutes())
 }
 
-// Clean a captured /proc cmdline into a safe relaunch string: collapses
-// internal whitespace (single spaces) and trims. Returns null when empty.
-function cleanCmd(raw) {
-    if (!raw) return null
-    var v = raw.replace(/\s+/g, " ").trim()
-    return v.length ? v : null
-}
-
 // ---------------------------------------------------------------------------
 // Browser detection
 // ---------------------------------------------------------------------------
@@ -182,6 +363,26 @@ function enforceProfileCardinality(profile) {
 // Tab URLs
 // ---------------------------------------------------------------------------
 
+// Validate an application-supplied filesystem path before it is stored in a
+// profile or handed to the tab-capture helper. Only absolute, symlink-free,
+// character-safe paths under `home` are accepted, so a crafted
+// `--user-data-dir` cannot point the capture helper at an arbitrary location
+// on the host.
+function isTrustedLocalPath(p, home) {
+    if (typeof p !== "string") return false
+    if (p.length === 0 || p.length > 4096) return false
+    if (/[\x00-\x1f]/.test(p)) return false
+    if (p.indexOf("~") !== -1) return false
+    if (p.charAt(0) !== "/") return false
+    if (typeof home === "string" && home.length > 0) {
+        var base = home.replace(/\/+$/, "")
+        if (p !== base && p.indexOf(base + "/") !== 0) return false
+    }
+    // No traversal segment may survive into the stored value.
+    if (/(^|\/)\.\.(\/|$)/.test(p)) return false
+    return true
+}
+
 // Validate a tab URL before it is injected into a launch command. Accepts
 // http/https and a conservative set of safe schemes, and rejects anything with
 // shell metacharacters or whitespace so a crafted/compromised URL can never
@@ -225,21 +426,24 @@ function buildTabUrls(tabs) {
 // Browser relaunch command construction
 // ---------------------------------------------------------------------------
 
-// Strip a stale `--new-window <urls>` tail left over from a previous restore
-// (the captured /proc cmdline still carries it), otherwise we'd append another
-// URL list and reopen duplicates.
+// Strip a stale `--new-window <urls>` tail. The desktop Exec line does not carry
+// one, but a stored profile from an older release may, and appending another URL
+// list would reopen duplicates.
 function stripStaleNewWindow(base) {
     var marker = base.indexOf(" --new-window ")
     return marker === -1 ? base : base.slice(0, marker)
 }
 
 // Returns an array of shell commands to run in sequence (one launch step per
-// element), which the restore script executes line by line. When the browser is
-// already running (the common case), passing `--new-window url1 url2` to Firefox
-// opens ONE window per URL, and Vivaldi's own session restore may add extra
-// tabs. So all URLs are passed without `--new-window` to open as tabs in the
-// existing window (single window, all tabs, no duplicates). When the browser is
-// not running, the same command opens one fresh window with all tabs.
+// element), which the restore script executes line by line.
+//
+// `pureCommand` must come from trustedLaunchCommand, never from the snapshot's
+// captured argv. When the browser is already running (the common case), passing
+// `--new-window url1 url2` to Firefox opens ONE window per URL, and Vivaldi's
+// own session restore may add extra tabs. So all URLs are passed without
+// `--new-window` to open as tabs in the existing window (single window, all tabs,
+// no duplicates). When the browser is not running, the same command opens one
+// fresh window with all tabs.
 function buildBrowserLaunchCommands(pureCommand, cls, tabs) {
     var cmd = pureCommand || ""
     var type = browserTypeForClass(cls)

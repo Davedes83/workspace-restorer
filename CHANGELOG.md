@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.3.0] - 2026-10-03
+
+### Security
+
+- **Restore no longer executes the application's own `argv`.** A snapshot stored each window's `/proc/<pid>/cmdline` and re-ran it on restore. That string is written by the application, so any app could decide what the restorer later ran on the host: a sandboxed application could set its argv to `sh -c ...` and have it executed outside its sandbox. Shell quoting never helped, because the whole command was the untrusted value rather than an argument inside a trusted one. Launch commands are now resolved from the **trusted desktop-entry database** (`scripts/desktop_launch.py`, keyed by window `StartupWMClass` with the file name as fallback), with the bare window class as the last resort. Nothing an application writes to its own argv can influence what is executed.
+- **Shells, interpreters and process-spawning shims are refused outright.** Even a hand-installed `.desktop` entry pointing at `sh`, `env`, `python3`, `flatpak`, `sudo` or `xdg-open` is rejected rather than run.
+- **Desktop field codes (`%U`, `%F`, ...) are stripped, not expanded**, so a registered entry cannot splice caller-supplied URLs or filenames into a trusted binary's arguments.
+- **A crafted `--user-data-dir` can no longer aim tab capture anywhere on disk.** The browser profile directory is app-supplied, so it must now be an absolute, traversal-free path under `$HOME` before it is stored or read.
+- The captured `argv` and working directory are no longer written into saved profiles at all. Profiles saved by earlier releases still contain a `command` field; it is ignored, so upgrading is safe.
+
+### Changed
+
+- Launch resolution reads the desktop database once at start-up instead of per restore.
+- Documented the external commands used (`hyprctl`, `python3`, `bash`, `notify-send`, optional `curl`) and the exact data/removal paths.
+
 ## [1.2.0] - 2026-10-03
 
 ### Fixed

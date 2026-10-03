@@ -93,12 +93,49 @@ The plugin uses these commands, all of which ship with a standard Omarchy instal
 | Command | Package | Used for |
 | --- | --- | --- |
 | `hyprctl` | `hyprland` | reading clients/monitors and dispatching window moves |
-| `python3` | `python` | the bundled `scripts/profile_store.py` profile reader/writer |
+| `python3` | `python` | the bundled `scripts/profile_store.py` and `scripts/desktop_launch.py` helpers |
 | `bash` | `bash` | per-process `/proc` introspection during a snapshot |
 | `notify-send` | `libnotify` | action feedback notifications |
 | `curl` | `curl` | optional — Chromium tab capture over `--remote-debugging-port` only |
 
 Nothing needs to be fetched or compiled: the bundled Python scripts run straight from the plugin directory, and the unit tests are developer-only. If an optional command is missing, the feature that needs it is skipped and the rest of the plugin keeps working.
+
+## Security model
+
+**Restore never runs a command supplied by an application.** This is the important
+property, so it is worth being explicit about how it works.
+
+A window's `/proc/<pid>/cmdline` is written by that process, not by Omarchy or by
+this plugin. If a saved profile carried that string and restore executed it, any
+application on your desktop would get to choose what runs on the host — a
+sandboxed application could set its own argv to `sh -c …` and have it run outside
+its sandbox. Quoting does not help in that case, because the entire command is the
+untrusted value rather than one argument inside a trusted command.
+
+So restore resolves every launch command from the **freedesktop application
+database** instead:
+
+1. `scripts/desktop_launch.py` reads the installed `.desktop` entries from
+   `/usr/share/applications`, `/usr/local/share/applications`,
+   `~/.local/share/applications` and the Flatpak export directories — all host-side
+   locations a sandboxed application cannot write to.
+2. The entry is matched by the window's `StartupWMClass`, falling back to the
+   desktop file name, falling back to the window class itself.
+3. `restoreLogic.js` tokenises the registered `Exec` line, **strips** field codes
+   (`%U`, `%F`, …) instead of expanding them, and refuses the entry outright if the
+   program is a shell, interpreter or process-spawning shim (`sh`, `env`, `python3`,
+   `flatpak`, `sudo`, `xdg-open`, …) or contains shell metacharacters.
+
+The captured `argv` is not stored in saved profiles at all. Profiles written by
+1.2.x and earlier still contain a `command` field; it is ignored, so upgrading is
+safe. A consequence worth knowing: an app with no installed `.desktop` entry now
+restarts by bare class name, so per-launch flags captured from a running process
+(for example `nautilus --new-window`) are no longer replayed. Installing a proper
+desktop entry restores that behaviour.
+
+Everything else the plugin runs is bounded and read-only: `hyprctl -j` for window
+state, `/proc` for a process's own command line and working directory, and the
+browser session files under your `$HOME` for tab capture.
 
 ## Data and removal
 
