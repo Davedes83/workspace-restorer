@@ -5,6 +5,12 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+// Single source of truth for the security-critical validators and command
+// builders. This file is the SAME one the node test suite exercises, so the
+// tests guard the code that actually runs. It cannot use `export` (that is a
+// hard load error in a QML JS library) and carries `//.pragma library` so node
+// can still evaluate it; see the header comment in restoreLogic.js.
+import "restoreLogic.js" as Logic
 
 Panel {
     id: root
@@ -24,7 +30,6 @@ Panel {
     readonly property string storeScript: Qt.resolvedUrl("scripts/profile_store.py").toString().replace(/^file:\/\//, "")
     property var pendingSnapshot: null
     property bool showingNameInput: false
-    property var monitorMap: ({})
     property var _monitorsCaptured: []
 
     readonly property color hoverBg: bar
@@ -33,13 +38,29 @@ Panel {
     readonly property color selectedBg: bar
         ? Style.selectedFillFor(bar.foreground, Color.accent)
         : Qt.darker(Color.bar.text, 1.15)
+    // Destructive hover tint. Derived from the palette's urgent role rather
+    // than the old hardcoded "#663333", so it follows the active theme.
+    readonly property color deleteBg: Util.alpha(Color.urgent, 0.22)
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
     Component.onCompleted: {
         ensureProfileDir()
-        buildMonitorMap()
+    }
+
+    // Dismissing the panel while the save prompt is open used to leave the
+    // prompt (and the captured snapshot) alive: nothing reset them except Save
+    // or Cancel, so reopening the panel minutes later offered to save a layout
+    // capture that was long stale. Discard on close instead.
+    Connections {
+        target: root
+        function onOpenedChanged() {
+            if (!root.opened && root.showingNameInput) {
+                root.showingNameInput = false
+                root.pendingSnapshot = null
+            }
+        }
     }
 
     // Guarantee the profile directory exists before any save/read. Uses the
@@ -152,24 +173,6 @@ Panel {
         return out.join(" ")
     }
 
-    // Append tab URLs (with --new-window) to a browser's relaunch command so a
-    // restored snapshot reopens a browser's pages. `pureCommand` is the already
-    // shell-quoted launch command from the profile. Mirrors restoreLogic.mjs.
-    function buildBrowserLaunchCommand(pureCommand, cls, tabs) {
-        var cmd = pureCommand || ""
-        var type = root.browserTypeForClass(cls)
-        if (!type) return cmd
-        var urls = root.buildTabUrls(tabs)
-        if (urls.length === 0) return cmd
-        var base = cmd.length > 0 ? cmd : root.shellArg(cls.toLowerCase())
-        // Strip a stale `--new-window <urls>` tail left over from a previous
-        // restore (the captured /proc cmdline still carries it), otherwise
-        // we'd append another URL list and reopen duplicates.
-        var marker = base.indexOf(" --new-window ")
-        if (marker !== -1) base = base.slice(0, marker)
-        return base + " --new-window " + urls
-    }
-
     // Returns an array of shell commands to run in sequence (one per step) to
     // reopen a browser window's tabs. Mirrors restoreLogic.mjs. URLs are passed
     // without `--new-window` because both Firefox and Vivaldi when already
@@ -237,32 +240,6 @@ Panel {
         var pad = function(n) { return n < 10 ? "0" + n : "" + n }
         return "snapshot-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
                "-" + pad(d.getHours()) + pad(d.getMinutes())
-    }
-
-    function buildMonitorMap() {
-        monitorMapProc.running = true
-    }
-
-    Process {
-        id: monitorMapProc
-        command: ["hyprctl", "-j", "monitors"]
-        stdout: StdioCollector {
-            waitForEnd: true
-            onStreamFinished: {
-                try {
-                    var monitors = JSON.parse(text)
-                    var map = {}
-                    for (var i = 0; i < monitors.length; i++) {
-                        map[monitors[i].id] = monitors[i].name
-                    }
-                    root.monitorMap = map
-                } catch(e) {}
-            }
-        }
-    }
-
-    function resolveExe(className) {
-        return className.toLowerCase()
     }
 
     // Return the browser engine for a window class: "firefox", "chromium", or
@@ -398,10 +375,13 @@ Panel {
                     model: root.profiles
 
                     delegate: Rectangle {
+                        id: profileRow
+                        readonly property color restFill: Qt.darker(Color.bar.background, 1.05)
+
                         width: parent.width
                         height: 36
                         radius: Style.cornerRadius
-                        color: Qt.darker(Color.bar.background, 1.05)
+                        color: restFill
 
                         RowLayout {
                             anchors.fill: parent
@@ -429,7 +409,7 @@ Panel {
                                     cursorShape: Qt.PointingHandCursor
                                     hoverEnabled: true
                                     enabled: !root.isRestoring && !root.isSnapshotting
-                                    onContainsMouseChanged: parent.parent.parent.color = containsMouse ? root.hoverBg : Qt.darker(Color.bar.background, 1.05)
+                                    onContainsMouseChanged: profileRow.color = containsMouse ? root.hoverBg : profileRow.restFill
                                     onClicked: root.doRestore(modelData)
                                 }
                             }
@@ -440,12 +420,16 @@ Panel {
                                 font.pixelSize: 13
                                 Layout.alignment: Qt.AlignVCenter
 
+                                // Referenced by id, not by walking the parent chain: the
+                                // chain here is MouseArea -> Text -> RowLayout, and
+                                // RowLayout has no `color` property to assign to.
                                 MouseArea {
+                                    id: deleteHotspot
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
                                     hoverEnabled: true
                                     enabled: !root.isRestoring && !root.isSnapshotting
-                                    onContainsMouseChanged: parent.parent.color = containsMouse ? "#663333" : "transparent"
+                                    onContainsMouseChanged: profileRow.color = containsMouse ? root.deleteBg : profileRow.restFill
                                     onClicked: root.doDelete(modelData)
                                 }
                             }
@@ -506,6 +490,7 @@ Panel {
             }
 
             Rectangle {
+                id: saveButton
                 width: parent.width
                 height: 36
                 radius: Style.cornerRadius
@@ -523,16 +508,22 @@ Panel {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     hoverEnabled: true
-                    onContainsMouseChanged: parent.parent.color = containsMouse ? root.selectedBg : root.hoverBg
+                    // Referenced by id: the parent chain here is
+                    // MouseArea -> Rectangle -> Column, and Column has no
+                    // `color` property, so `parent.parent.color` threw.
+                    onContainsMouseChanged: saveButton.color = containsMouse ? root.selectedBg : root.hoverBg
                     onClicked: confirmSave()
                 }
             }
 
             Rectangle {
+                id: cancelButton
+                readonly property color restFill: Qt.darker(Color.bar.background, 1.05)
+
                 width: parent.width
                 height: 36
                 radius: Style.cornerRadius
-                color: Qt.darker(Color.bar.background, 1.05)
+                color: restFill
 
                 Text {
                     anchors.centerIn: parent
@@ -546,7 +537,9 @@ Panel {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     hoverEnabled: true
-                    onContainsMouseChanged: parent.parent.color = containsMouse ? Qt.darker(Color.bar.text, 1.1) : Qt.darker(Color.bar.background, 1.05)
+                    // See saveButton: assigning to the enclosing Column's
+                    // `color` threw a TypeError on every hover.
+                    onContainsMouseChanged: cancelButton.color = containsMouse ? Qt.darker(Color.bar.text, 1.1) : cancelButton.restFill
                     onClicked: {
                         root.showingNameInput = false
                         root.pendingSnapshot = null
@@ -585,7 +578,40 @@ Panel {
         if (root.isSnapshotting) return
         root.isSnapshotting = true
         root.lastAction = "Capturing..."
+        root._monitorsCaptured = []
+        // Arm the watchdog: if any capture stage never completes (a hung
+        // capture_tabs.py, a killed hyprctl), failSnapshot() resets the flag
+        // so the widget can never latch into a permanent "Capturing...".
+        snapshotWatchdog.restart()
         snapClientsProc.running = true
+    }
+
+    // Single place that tears down a snapshot attempt. Every capture stage's
+    // failure path funnels through here (and the watchdog does too), so
+    // `isSnapshotting` is always cleared exactly once and the widget never
+    // ends up stuck with the action buttons permanently disabled.
+    function failSnapshot(reason) {
+        snapshotWatchdog.stop()
+        root.isSnapshotting = false
+        root.lastAction = reason || "Snapshot failed"
+    }
+
+    // 45s is far beyond the worst legitimate chain (hyprctl + /proc reads +
+    // per-browser capture, each internally bounded to seconds), so tripping it
+    // means something is genuinely stuck rather than merely slow.
+    Timer {
+        id: snapshotWatchdog
+        interval: 45000
+        repeat: false
+        onTriggered: {
+            console.error("WSRESTORE snapshot watchdog fired; killing capture stages")
+            snapClientsProc.running = false
+            snapCmdlinesProc.running = false
+            snapMonitorsProc.running = false
+            snapTabsProc.running = false
+            root.failSnapshot("Capture timed out")
+            root.notify("Capture timed out", "The snapshot was abandoned after 45s")
+        }
     }
 
     Process {
@@ -620,8 +646,7 @@ Panel {
                         "done"]
                     snapCmdlinesProc.running = true
                 } catch(e) {
-                    root.isSnapshotting = false
-                    root.lastAction = "Failed to capture windows"
+                    root.failSnapshot("Failed to capture windows")
                 }
             }
         }
@@ -634,6 +659,14 @@ Panel {
             waitForEnd: true
             onStreamFinished: {
                 var clients = snapCmdlinesProc._clients
+                // _clients is null only if the previous stage bailed out before
+                // setting it. Bail here rather than letting the catch block
+                // dereference a null `clients` and throw a second time, which
+                // would strand isSnapshotting = true with no way back.
+                if (!clients) {
+                    root.failSnapshot("Failed to capture windows")
+                    return
+                }
                 try {
                     var infoMap = {}
                     var lines = (text || "").split("\n")
@@ -652,6 +685,8 @@ Panel {
                         clients[i]._cwd = (info && info.cwd) ? info.cwd.trim() : null
                     }
                 } catch(e) {
+                    // A single unparsable line must not lose every window's
+                    // /proc data - null the two fields and carry on.
                     for (var k = 0; k < clients.length; k++) {
                         clients[k]._cmdline = null
                         clients[k]._cwd = null
@@ -740,9 +775,8 @@ Panel {
                     root._monitorsCaptured = monitors
                     snapTabsProc.begin()
                 } catch(e) {
-                    root.isSnapshotting = false
-                    root.lastAction = "Failed to capture monitors"
-                    console.error("WSRESTORE snapMonitors error:", String(e && e.stack || e), "| lastAction=", root.lastAction)
+                    console.error("WSRESTORE snapMonitors error:", String(e && e.stack || e))
+                    root.failSnapshot("Failed to capture monitors")
                 }
             }
         }
@@ -785,11 +819,22 @@ Panel {
         }
 
         function finishNow() {
-            root.pendingSnapshot = snapTabsProc.assemble()
-            root.isSnapshotting = false
-            root.lastAction = "Captured " + snapTabsProc._windows.length + " windows"
-            saveNameField.text = generateDefaultName()
-            root.showingNameInput = true
+            // try/catch is load-bearing here: without it a throw from assemble()
+            // (or from the name field) skipped `isSnapshotting = false` and left
+            // the widget permanently stuck on "Capturing..." with every action
+            // disabled - recoverable only by restarting the shell.
+            try {
+                root.pendingSnapshot = snapTabsProc.assemble()
+                snapshotWatchdog.stop()
+                root.isSnapshotting = false
+                root.lastAction = "Captured " + snapTabsProc._windows.length + " windows"
+                saveNameField.text = generateDefaultName()
+                root.showingNameInput = true
+            } catch(e) {
+                console.error("WSRESTORE assemble error:", String(e && e.stack || e))
+                root.pendingSnapshot = null
+                root.failSnapshot("Failed to assemble snapshot")
+            }
         }
 
         // Build pendingSnapshot, attaching parsed tab data onto windows.
@@ -839,8 +884,6 @@ Panel {
         }
     }
 
-    // Monitor list captured by the monitors stage, stashed for the final
-    // profile assembly (kept on root so snapTabsProc.assemble can read it).
     // --- Save ---
 
     function doSave(name) {
@@ -869,6 +912,15 @@ Panel {
         property string _json: ""
         command: []
         stdinEnabled: true
+        // NOTE on payload size: a snapshot with browser tabs serialises to far
+        // more than the 64 KiB pipe buffer (measured: 6 windows x 250 tabs =
+        // 221 KB), so this was probed rather than assumed. Quickshell buffers
+        // the overflow internally - a real 221 KB save through this exact path
+        // lands on disk whole and parses as valid JSON - so a single write()
+        // followed by closing stdin is correct and must NOT be converted into a
+        // byte-counting write loop. Process.write() returns void and there is no
+        // writeReturned signal (checked against quickshell 0.2.1 and 0.3.1), so
+        // such a loop could not even be written.
         onStarted: {
             saveProc.write(saveProc._json)
             saveProc.stdinEnabled = false
@@ -961,18 +1013,60 @@ Panel {
     Process {
         id: masterRestoreProc
         property int _count: 0
-        command: ["bash", "-c", ""]
-        onExited: function(exitCode) {
+        property int _failed: 0
+        property bool _reported: false
+
+        // Reports the outcome exactly once. Prefers the failure count carried
+        // on stdout (WSR_FAILED=) over the bare exit code, because every step
+        // in the script is individually guarded, so the exit code alone cannot
+        // distinguish "all good" from "every dispatch was rejected".
+        function report(exitCode) {
+            if (_reported) return
+            _reported = true
             root.isRestoring = false
+
             if (exitCode !== 0) {
                 root.lastAction = "Restore failed"
-                root.notify("Restore failed", "Not all windows could be restored")
+                root.notify("Restore failed", "See " + root.restoreLogPath)
                 return
             }
+
+            if (_failed > 0) {
+                // Partial failure. Never claim a clean restore when dispatches
+                // were rejected - the old code always said "Restored N".
+                root.lastAction = "Restored " + Math.max(0, _count - _failed) + "/" + _count + " windows"
+                root.notify("Restore partially failed",
+                            _failed + " step(s) failed - see " + root.restoreLogPath)
+                return
+            }
+
             root.lastAction = "Restored " + _count + " windows"
             root.notify("Workspace restored", _count + " windows launched")
         }
+
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                // The launcher echoes the persisted failure count on its last
+                // stdout line; parse it so the summary is truthful.
+                var lines = (text || "").split("\n")
+                for (var i = 0; i < lines.length; i++) {
+                    var m = /^WSR_FAILED=(\d+)\s*$/.exec(lines[i].trim())
+                    if (m) masterRestoreProc._failed = parseInt(m[1], 10)
+                }
+            }
+        }
+
+        onExited: function(exitCode) {
+            // Give the collector a chance to deliver the final stdout line
+            // before deciding, then report once.
+            Qt.callLater(function() { masterRestoreProc.report(exitCode) })
+        }
     }
+
+    // Path the restore script copies its diagnostics to, so a failed restore is
+    // inspectable after the private WSROOT is torn down.
+    readonly property string restoreLogPath: root.profileDir + "/last-restore.log"
 
     // Build and run the restore script. Extracted into its own function so the
     // whole construction is wrapped in try/catch: any unexpected throw here
@@ -987,7 +1081,20 @@ Panel {
             // is removed on exit unless the detached safety pass owns cleanup.
             lines.push("LOGFILE=\"$WSROOT/restore.log\"")
             lines.push("SAFETY_OWNED=0")
-            lines.push("trap 'if [ \"$SAFETY_OWNED\" != \"1\" ]; then rm -rf \"$WSROOT\"; fi' EXIT")
+            lines.push("STATUS=\"$WSROOT/status\"")
+            lines.push("FAILED=0")
+            // note_fail is defined before any step that can call it, and
+            // replaces the bare `|| true` swallow so a failed dispatch is
+            // counted instead of silently ignored.
+            lines.push("note_fail() { FAILED=$((FAILED+1)); echo \"[fail] $1\" >> \"$LOGFILE\"; }")
+            lines.push("printf '0' > \"$STATUS\"")
+            // The script does NOT delete $WSROOT itself: the outer launcher has
+            // to read $WSROOT/status and $WSROOT/restore.log after this exits,
+            // and a cleanup trap here would destroy that evidence first. The
+            // launcher copies the diagnostics out and then removes the dir.
+            // (When a safety pass owns the dir, the launcher's remove is a
+            // no-op because the pass has already finished with it.)
+            lines.push("trap 'printf \"%s\" \"$FAILED\" > \"$STATUS\" 2>/dev/null || true' EXIT")
             lines.push("echo \"[start] wsroot=$WSROOT profile_windows=" + profile.windows.length + " existing=" + (existing ? existing.length : 0) + "\" >> \"$LOGFILE\"")
 
             // Track which profile windows have been matched
@@ -1014,9 +1121,17 @@ Panel {
                     // and only overwrite it on an exact title match - otherwise
                     // repeated scans keep clobbering bestIdx with the LAST
                     // same-class window instead of a stable pick.
+                    //
+                    // Class comparison is lowercased on both sides: every other
+                    // class decision in this file (browserTypeForClass, safeClass)
+                    // is case-insensitive, so a case-only difference between the
+                    // snapshot and the live window used to miss the match
+                    // entirely - leaving the live window open AND spawning a
+                    // duplicate.
+                    var eClass = String(e.class || "").toLowerCase()
                     for (var p = 0; p < profile.windows.length; p++) {
                         if (matched[p]) continue
-                        if (e.class === profile.windows[p].class) {
+                        if (eClass === String(profile.windows[p].class || "").toLowerCase()) {
                             if (bestIdx === -1) bestIdx = p
                             if (e.title === profile.windows[p].title) {
                                 bestIdx = p
@@ -1033,7 +1148,11 @@ Panel {
                         // clean window with exactly the snapshot's tabs. Leave
                         // matched[] false so Phase 3 spawns this window.
                         if (target.browser && target.tabs && target.tabs.length > 0) {
-                            browserCloseAddrs.push(e.address)
+                            // Carry the PID so Phase 2c can wait for the actual
+                            // process to exit instead of guessing with a fixed
+                            // sleep - a browser that outlives the sleep would
+                            // swallow the relaunch as a forwarded command.
+                            browserCloseAddrs.push({ addr: e.address, pid: e.pid })
                             continue
                         }
                         matched[bestIdx] = true
@@ -1073,7 +1192,7 @@ Panel {
             for (var wsName in wsToMonitor) {
                 if (!wsToMonitor[wsName]) continue
                 lines.push("echo \"[pin] ws=" + wsName + " monitor=" + wsToMonitor[wsName] + "\" >> \"$LOGFILE\"")
-                lines.push("hyprctl dispatch \"hl.dsp.workspace.move({workspace='" + wsName + "', monitor='" + wsToMonitor[wsName] + "'})\" 2>>\"$LOGFILE\" || true")
+                lines.push("hyprctl dispatch \"hl.dsp.workspace.move({workspace='" + wsName + "', monitor='" + wsToMonitor[wsName] + "'})\" >>\"$LOGFILE\" 2>&1 || note_fail \"pin ws=" + wsName + "\"")
             }
 
             // Phase 1: Removed. We no longer SIGKILL unmatched windows and
@@ -1085,12 +1204,12 @@ Panel {
             for (var m = 0; m < toMove.length; m++) {
                 var mv = toMove[m]
                 lines.push("echo \"[move-existing] ws=" + mv.ws + " addr=" + mv.addr + "\" >> \"$LOGFILE\"")
-                lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', window='address:" + mv.addr + "', follow=false})\" 2>>\"$LOGFILE\" || true")
+                lines.push("hyprctl dispatch \"hl.dsp.window.move({workspace='" + mv.ws + "', window='address:" + mv.addr + "', follow=false})\" >>\"$LOGFILE\" 2>&1 || note_fail \"move ws=" + mv.ws + " addr=" + mv.addr + "\"")
                 // Restore fullscreen only if the target was captured fullscreen
                 // AND the existing window isn't already fullscreen (avoids
                 // leaving the user stuck in fullscreen unexpectedly).
                 if (mv.fullscreen && !mv.e_fullscreen) {
-                    lines.push("hyprctl dispatch \"hl.dsp.window.fullscreen({mode='fullscreen', window='address:" + mv.addr + "'})\" 2>>\"$LOGFILE\" || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.fullscreen({mode='fullscreen', window='address:" + mv.addr + "'})\" >>\"$LOGFILE\" 2>&1 || note_fail \"fullscreen addr=" + mv.addr + "\"")
                 }
             }
 
@@ -1105,24 +1224,36 @@ Panel {
                 // from the target's captured state, so an already-floating
                 // window is not un-floated.
                 if (!fl.e_floating) {
-                    lines.push("hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.float({action='toggle', window='address:" + fl.addr + "'})\" >>\"$LOGFILE\" 2>&1 || note_fail \"float addr=" + fl.addr + "\"")
                 }
-                lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fx + ", y=" + fy + ", relative=false, window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
-                lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fw + ", y=" + fh + ", window='address:" + fl.addr + "'})\" 2>>\"$LOGFILE\" || true")
+                lines.push("hyprctl dispatch \"hl.dsp.window.move({x=" + fx + ", y=" + fy + ", relative=false, window='address:" + fl.addr + "'})\" >>\"$LOGFILE\" 2>&1 || note_fail \"float-move addr=" + fl.addr + "\"")
+                lines.push("hyprctl dispatch \"hl.dsp.window.resize({x=" + fw + ", y=" + fh + ", window='address:" + fl.addr + "'})\" >>\"$LOGFILE\" 2>&1 || note_fail \"float-resize addr=" + fl.addr + "\"")
             }
 
             // Phase 2c: Close existing browser windows whose snapshot carried
             // captured tabs. Closing them makes the browser process exit; the
             // relaunch in Phase 3 then starts it fresh so `browser url1 url2`
-            // opens exactly one window with the snapshot's tabs. Wait briefly
-            // for the process to fully quit so the fresh launch isn't
-            // forwarded to the dying instance.
+            // opens exactly one window with the snapshot's tabs. Wait for the
+            // process to actually exit so the fresh launch isn't forwarded to
+            // the dying instance.
             if (browserCloseAddrs.length > 0) {
                 for (var bc = 0; bc < browserCloseAddrs.length; bc++) {
-                    lines.push("echo \"[close-browser] addr=" + browserCloseAddrs[bc] + "\" >> \"$LOGFILE\"")
-                    lines.push("hyprctl dispatch \"hl.dsp.window.close({window='address:" + browserCloseAddrs[bc] + "'})\" 2>>\"$LOGFILE\" || true")
+                    var bEntry = browserCloseAddrs[bc]
+                    lines.push("echo \"[close-browser] addr=" + bEntry.addr + "\" >> \"$LOGFILE\"")
+                    lines.push("hyprctl dispatch \"hl.dsp.window.close({window='address:" + bEntry.addr + "'})\" >>\"$LOGFILE\" 2>&1 || note_fail \"close-browser addr=" + bEntry.addr + "\"")
+                    // Poll for exit (up to ~10s) rather than sleeping a fixed
+                    // 1.5s: a cold-quitting browser that outlives the sleep
+                    // would receive the relaunch as a command-line message and
+                    // the snapshot's tabs would never open. `kill -0` on a
+                    // reaped-but-not-waited PID still succeeds, so fall back to
+                    // a bounded overall wait if the PID never disappears.
+                    if (bEntry.pid !== undefined && bEntry.pid !== null && isFinite(Number(bEntry.pid)) && Number(bEntry.pid) > 0) {
+                        var pidNum = Math.round(Number(bEntry.pid))
+                        lines.push("for _i in $(seq 1 40); do kill -0 " + pidNum + " 2>/dev/null || break; sleep 0.25; done")
+                    } else {
+                        lines.push("sleep 1.5")
+                    }
                 }
-                lines.push("sleep 1.5")
             }
 
             // Phase 3: Spawn missing windows directly onto their target
@@ -1176,7 +1307,7 @@ Panel {
                     lines.push("SPATH=\"$WSROOT/spawn-" + j + ".sh\"")
                     lines.push("printf '#!/bin/bash\\n%s\\n' " + root.shellArg(launchline) + " > \"$SPATH\" && chmod 700 \"$SPATH\"")
                     // Focus the target workspace so the window lands on it
-                    lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + ws + "'})\" 2>>\"$LOGFILE\" || true")
+                    lines.push("hyprctl dispatch \"hl.dsp.focus({workspace='" + ws + "'})\" >>\"$LOGFILE\" 2>&1 || note_fail \"focus ws=" + ws + "\"")
                     lines.push("sleep 0.3")
                     lines.push("bash \"$SPATH\" &")
                     lines.push("echo \"[launch] ws=" + ws + " cmd='$SPATH'\" >> \"$LOGFILE\"")
@@ -1208,9 +1339,19 @@ Panel {
                 safety.push("#!/bin/bash")
                 safety.push("LOGFILE=\"$WSROOT/restore.log\"")
                 // The safety pass is the last consumer of the private WSROOT,
-                // so it owns cleanup - removes the whole private dir (only
-                // our own files) when it finishes, with a trap for safety.
-                safety.push("trap 'rm -rf \"$WSROOT\"' EXIT")
+                // so it owns final cleanup - via a trap, so it runs AFTER the
+                // polling loop below has finished using $WSROOT. Before
+                // removing it, copy the diagnostics out to the profile dir so a
+                // partial/failed restore stays inspectable (the outer launcher
+                // does the same, but it may run while this pass is mid-flight).
+                safety.push("cleanup_safety() {")
+                safety.push("  if [ -n \"$WSPROFILES\" ] && [ -d \"$WSPROFILES\" ]; then")
+                safety.push("    cp \"$WSROOT/restore.log\" \"$WSPROFILES/last-restore.log\" 2>/dev/null || true")
+                safety.push("    [ -f \"$WSROOT/status\" ] && cp \"$WSROOT/status\" \"$WSPROFILES/last-restore-status\" 2>/dev/null || true")
+                safety.push("  fi")
+                safety.push("  rm -rf \"$WSROOT\"")
+                safety.push("}")
+                safety.push("trap cleanup_safety EXIT")
                 safety.push("MATCHED_ADDRS=\"" + matchedAddrs.join(" ") + "\"")
                 safety.push("sleep 1")
                 safety.push("MOVED_ADDRS=\"\"")
@@ -1262,7 +1403,14 @@ Panel {
                 lines.push("disown")
             }
 
-            var totalCount = toMove.length + toFloat.length + spawnCount
+            // Count DISTINCT windows acted on. toMove and toFloat can name the same
+            // address (a floating window that also needs moving), so summing
+            // the two array lengths over-reported. Build a set of addresses
+            // plus the spawns instead.
+            var touchedAddrs = {}
+            for (var ti = 0; ti < toMove.length; ti++) touchedAddrs[toMove[ti].addr] = true
+            for (var tf = 0; tf < toFloat.length; tf++) touchedAddrs[toFloat[tf].addr] = true
+            var totalCount = Object.keys(touchedAddrs).length + spawnCount
 
             var scriptContent = lines.join("\n")
             masterRestoreProc._count = totalCount
@@ -1272,14 +1420,30 @@ Panel {
             // races on restore.sh, spawn-*.sh, safety.sh and the log. The
             // restore.sh path is never a replaceable shared name, and the
             // safety pass cleans the private dir up when it finishes.
+            //
+            // After the script finishes, copy the status count and the log out
+            // of $WSROOT into the profile dir before it is torn down, then
+            // report the real outcome.
             masterRestoreProc.command = ["bash", "-c",
                 "set -o pipefail; " +
                 "WSROOT=$(mktemp -d) || exit 1; " +
                 "chmod 700 \"$WSROOT\" || exit 1; " +
                 "umask 077; " +
                 "export WSROOT; " +
+                "export WSPROFILES=" + root.shellArg(root.profileDir) + "; " +
                 "printf '%s\\n' " + Util.shellQuote(scriptContent) + " > \"$WSROOT/restore.sh\" && " +
-                "bash \"$WSROOT/restore.sh\""]
+                "bash \"$WSROOT/restore.sh\"; " +
+                "_rc=$?; " +
+                "_failed=$(cat \"$WSROOT/status\" 2>/dev/null || echo 0); " +
+                "case \"$_failed\" in ''|*[!0-9]*) _failed=0 ;; esac; " +
+                "mkdir -p \"$WSPROFILES\" 2>/dev/null || true; " +
+                "printf '%s' \"$_failed\" > \"$WSPROFILES/last-restore-status\" 2>/dev/null || true; " +
+                "cp \"$WSROOT/restore.log\" \"$WSPROFILES/last-restore.log\" 2>/dev/null || true; " +
+                "echo \"WSR_FAILED=$_failed\"; " +
+                "rm -rf \"$WSROOT\"; " +
+                "exit $_rc"]
+            masterRestoreProc._failed = 0
+            masterRestoreProc._reported = false
             masterRestoreProc.running = true
         } catch(err) {
             root.isRestoring = false
@@ -1289,6 +1453,22 @@ Panel {
     }
 
     // --- Delete ---
+
+    // Name awaiting delete confirmation. Held here rather than passed through
+    // the dialog so the dialog stays a dumb pair of callbacks.
+    property string pendingDeleteName: ""
+
+    // Ask first. A single unconfirmed click on a 22px icon used to destroy a
+    // profile irrecoverably.
+    function confirmDelete(name) {
+        var safe = root.sanitizeProfileName(name)
+        if (safe === null) {
+            root.lastAction = "Invalid profile name"
+            return
+        }
+        root.pendingDeleteName = safe
+        deleteDialog.opened = true
+    }
 
     function doDelete(name) {
         var safe = root.sanitizeProfileName(name)
@@ -1309,6 +1489,7 @@ Panel {
                 return
             }
             root.lastAction = "Deleted"
+            root.cursorIndex = -1
             root.refreshProfiles()
             root.notify("Profile deleted", "")
         }
@@ -1319,5 +1500,20 @@ Panel {
         if (name.length > 0) {
             root.doSave(name)
         }
+    }
+
+    // Abandon a capture without saving it. Shared by the Cancel button and by
+    // dismissing the panel, so the prompt and its snapshot always die together.
+    function discardSnapshot() {
+        root.showingNameInput = false
+        root.pendingSnapshot = null
+        root.lastAction = "Snapshot discarded"
+    }
+
+    // The keyboard cursor indexes into `profiles`, so it has to be dropped or
+    // clamped whenever that list changes - otherwise deleting the last row
+    // leaves the cursor pointing past the end.
+    onProfilesChanged: {
+        if (root.cursorIndex >= root.profiles.length) root.cursorIndex = -1
     }
 }

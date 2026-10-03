@@ -1,8 +1,21 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import {
+import { readFileSync } from "node:fs"
+import { createContext, runInContext } from "node:vm"
+import { fileURLToPath } from "node:url"
+
+// restoreLogic.js is a QML JS library: it cannot use `export` (a hard load
+// error in QML) and carries `//.pragma library` so node can evaluate it too.
+// So it is loaded by evaluating the source and reading the declarations off the
+// resulting global scope rather than through an ESM import. That means these
+// tests exercise the EXACT file BarWidget.qml imports - there is no second copy
+// that can drift.
+const LOGIC_PATH = fileURLToPath(new URL("../restoreLogic.js", import.meta.url))
+const logic = createContext({})
+runInContext(readFileSync(LOGIC_PATH, "utf8"), logic)
+
+const {
     sanitizeProfileName,
-    validProfilePath,
     shellArg,
     sanitizeLaunchCommand,
     safeWorkspace,
@@ -11,16 +24,16 @@ import {
     profileIconFor,
     generateDefaultName,
     cleanCmd,
-    buildMonitorMap,
     browserTypeForClass,
     safeUrl,
     buildTabUrls,
-    buildBrowserLaunchCommand,
     buildBrowserLaunchCommands,
     enforceProfileCardinality,
+    matchProfileWindow,
+    stripStaleNewWindow,
     MAX_WINDOWS,
     MAX_TABS_PER_WINDOW,
-} from "../restoreLogic.mjs"
+} = logic
 
 const DIR = "/home/user/.config/omarchy/workspace-restorer"
 
@@ -70,19 +83,6 @@ test("sanitizeProfileName rejects shell/special metacharacters", () => {
     for (const name of ["x$y", "x`y", "x$(y)", "x|y", "x<y", "x>y", "x&y", "x!y", "x~y", "x%y", "x@y", "x#y", "x?y", "x*y", "x'y", 'x"y']) {
         assert.equal(sanitizeProfileName(name), null, `should reject: ${name}`)
     }
-})
-
-// --- validProfilePath ---
-
-test("validProfilePath builds a contained .json path", () => {
-    assert.equal(validProfilePath("coding", DIR), DIR + "/coding.json")
-})
-
-test("validProfilePath returns null for invalid names", () => {
-    assert.equal(validProfilePath("..", DIR), null)
-    assert.equal(validProfilePath("../evil", DIR), null)
-    assert.equal(validProfilePath("", DIR), null)
-    assert.equal(validProfilePath(null, DIR), null)
 })
 
 // --- shellArg ---
@@ -216,13 +216,6 @@ test("cleanCmd returns null for empty/invalid", () => {
     assert.equal(cleanCmd(null), null)
 })
 
-// --- buildMonitorMap ---
-
-test("buildMonitorMap maps monitor id to name", () => {
-    const monitors = [{ id: 0, name: "DP-1" }, { id: 1, name: "HDMI-A-1" }]
-    assert.deepEqual(buildMonitorMap(monitors), { 0: "DP-1", 1: "HDMI-A-1" })
-})
-
 // --- browserTypeForClass ---
 
 test("browserTypeForClass detects Firefox family", () => {
@@ -285,38 +278,19 @@ test("buildTabUrls returns empty for no usable tabs", () => {
     assert.equal(buildTabUrls([{ url: "https://x.com/;ls" }]), "")
 })
 
-// --- buildBrowserLaunchCommand ---
+// --- stripStaleNewWindow ---
 
-test("buildBrowserLaunchCommand appends --new-window + URLs", () => {
-    const tabs = [{ url: "https://github.com/" }, { url: "https://news.ycombinator.com/" }]
+test("stripStaleNewWindow removes a stale --new-window tail", () => {
+    const polluted = "'/opt/vivaldi/vivaldi-bin' --new-window 'https://a/' 'https://b/'"
     assert.equal(
-        buildBrowserLaunchCommand("'firefox'", "firefox", tabs),
-        "'firefox' --new-window 'https://github.com/' 'https://news.ycombinator.com/'"
+        stripStaleNewWindow(polluted),
+        "'/opt/vivaldi/vivaldi-bin'"
     )
 })
 
-test("buildBrowserLaunchCommand falls back to class name when no base command", () => {
-    const tabs = [{ url: "https://example.com/" }]
-    assert.equal(
-        buildBrowserLaunchCommand("", "Google-chrome", tabs),
-        "'google-chrome' --new-window 'https://example.com/'"
-    )
-})
-
-test("buildBrowserLaunchCommand returns base command unchanged when no tabs or non-browser", () => {
-    assert.equal(buildBrowserLaunchCommand("'nautilus'", "nautilus", [{ url: "https://x.com" }]), "'nautilus'")
-    assert.equal(buildBrowserLaunchCommand("'firefox'", "firefox", []), "'firefox'")
-    assert.equal(buildBrowserLaunchCommand("'firefox'", "firefox", null), "'firefox'")
-})
-
-test("buildBrowserLaunchCommand strips a stale --new-window tail to avoid duplicate restore", () => {
-    // The captured /proc cmdline already carries URLs from a previous restore.
-    const polluted = "'/opt/vivaldi/vivaldi-bin' --new-window 'https://github.com/dashboard' 'https://www.reddit.com/'"
-    const tabs = [{ url: "https://github.com/dashboard" }, { url: "https://www.reddit.com/" }]
-    assert.equal(
-        buildBrowserLaunchCommand(polluted, "vivaldi-stable", tabs),
-        "'/opt/vivaldi/vivaldi-bin' --new-window 'https://github.com/dashboard' 'https://www.reddit.com/'"
-    )
+test("stripStaleNewWindow leaves a clean command untouched", () => {
+    assert.equal(stripStaleNewWindow("'firefox'"), "'firefox'")
+    assert.equal(stripStaleNewWindow("'firefox' --profile dev"), "'firefox' --profile dev")
 })
 
 // --- enforceProfileCardinality ---
@@ -357,11 +331,16 @@ test("enforceProfileCardinality rejects tabs beyond the per-window cap", () => {
 })
 
 // --- buildBrowserLaunchCommands ---
+//
+// NOTE: results are spread with [...] before comparison. The logic runs in a
+// separate vm realm, so its arrays carry that realm's Array.prototype and
+// assert/strict's deepStrictEqual rejects them as a prototype mismatch even
+// when the contents are identical. Spreading copies into a local-realm array.
 
 test("buildBrowserLaunchCommands passes all URLs without --new-window for Chromium", () => {
     const tabs = [{ url: "https://github.com/" }, { url: "https://www.reddit.com/" }]
     assert.deepEqual(
-        buildBrowserLaunchCommands("'google-chrome'", "Google-chrome", tabs),
+        [...buildBrowserLaunchCommands("'google-chrome'", "Google-chrome", tabs)],
         ["'google-chrome' 'https://github.com/' 'https://www.reddit.com/'"]
     )
 })
@@ -369,7 +348,7 @@ test("buildBrowserLaunchCommands passes all URLs without --new-window for Chromi
 test("buildBrowserLaunchCommands keeps a single Chromium tab in one command", () => {
     const tabs = [{ url: "https://github.com/" }]
     assert.deepEqual(
-        buildBrowserLaunchCommands("'google-chrome'", "Google-chrome", tabs),
+        [...buildBrowserLaunchCommands("'google-chrome'", "Google-chrome", tabs)],
         ["'google-chrome' 'https://github.com/'"]
     )
 })
@@ -377,13 +356,66 @@ test("buildBrowserLaunchCommands keeps a single Chromium tab in one command", ()
 test("buildBrowserLaunchCommands passes all URLs without --new-window for Firefox (no split windows)", () => {
     const tabs = [{ url: "https://github.com/" }, { url: "https://www.reddit.com/" }]
     assert.deepEqual(
-        buildBrowserLaunchCommands("'firefox'", "firefox", tabs),
+        [...buildBrowserLaunchCommands("'firefox'", "firefox", tabs)],
         ["'firefox' 'https://github.com/' 'https://www.reddit.com/'"]
     )
 })
 
 test("buildBrowserLaunchCommands returns base command unchanged for non-browsers or no tabs", () => {
-    assert.deepEqual(buildBrowserLaunchCommands("'nautilus'", "nautilus", [{ url: "https://x.com" }]), ["'nautilus'"])
-    assert.deepEqual(buildBrowserLaunchCommands("'firefox'", "firefox", []), ["'firefox'"])
-    assert.deepEqual(buildBrowserLaunchCommands("", "nautilus", [{ url: "https://x.com" }]), [])
+    assert.deepEqual([...buildBrowserLaunchCommands("'nautilus'", "nautilus", [{ url: "https://x.com" }])], ["'nautilus'"])
+    assert.deepEqual([...buildBrowserLaunchCommands("'firefox'", "firefox", [])], ["'firefox'"])
+    assert.deepEqual([...buildBrowserLaunchCommands("", "nautilus", [{ url: "https://x.com" }])], [])
+})
+
+// --- matchProfileWindow ---
+
+test("matchProfileWindow matches on class", () => {
+    const profile = [{ class: "kitty", title: "term" }, { class: "firefox", title: "web" }]
+    assert.equal(matchProfileWindow({ class: "firefox", title: "web" }, profile, [false, false]), 1)
+    assert.equal(matchProfileWindow({ class: "kitty", title: "term" }, profile, [false, false]), 0)
+})
+
+test("matchProfileWindow matches class case-insensitively", () => {
+    // Regression: a case-only difference used to miss the match entirely, which
+    // left the live window open AND spawned a duplicate.
+    const profile = [{ class: "Firefox", title: "web" }, { class: "Google-chrome", title: "browse" }]
+    assert.equal(matchProfileWindow({ class: "firefox", title: "web" }, profile, [false, false]), 0)
+    assert.equal(matchProfileWindow({ class: "FIREFOX", title: "web" }, profile, [false, false]), 0)
+    assert.equal(matchProfileWindow({ class: "google-chrome", title: "browse" }, profile, [false, false]), 1)
+})
+
+test("matchProfileWindow prefers an exact title match among same-class windows", () => {
+    const profile = [
+        { class: "kitty", title: "first" },
+        { class: "kitty", title: "second" },
+    ]
+    const matched = [false, false]
+    assert.equal(matchProfileWindow({ class: "kitty", title: "second" }, profile, matched), 1)
+})
+
+test("matchProfileWindow falls back to the first unmatched same-class window", () => {
+    const profile = [
+        { class: "kitty", title: "first" },
+        { class: "kitty", title: "second" },
+    ]
+    const matched = [false, false]
+    assert.equal(matchProfileWindow({ class: "kitty", title: "no-such-title" }, profile, matched), 0)
+})
+
+test("matchProfileWindow skips already-claimed profile windows", () => {
+    const profile = [
+        { class: "kitty", title: "first" },
+        { class: "kitty", title: "second" },
+    ]
+    // First window already consumed profile[0], so the next kitty must take [1]
+    // rather than re-matching the claimed one.
+    const matched = [true, false]
+    assert.equal(matchProfileWindow({ class: "kitty", title: "second" }, profile, matched), 1)
+})
+
+test("matchProfileWindow returns -1 when nothing matches", () => {
+    const profile = [{ class: "kitty", title: "term" }]
+    assert.equal(matchProfileWindow({ class: "firefox", title: "web" }, profile, [false]), -1)
+    assert.equal(matchProfileWindow(null, profile, [false]), -1)
+    assert.equal(matchProfileWindow({ class: "kitty" }, null, [false]), -1)
 })

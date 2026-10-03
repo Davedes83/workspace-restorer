@@ -12,6 +12,8 @@ An Omarchy shell plugin (Quickshell) for Hyprland that snapshots your window lay
 - **Restore** — Re-launch missing apps directly onto the exact workspace they were on; move already-running windows back to the right workspace
 - **Conflict Detection** — Avoids duplicate spawns; repositions existing windows instead of relaunching them
 - **Layout Restoration** — Restores floating and fullscreen state for matched and spawned windows
+- **Browser Tabs** — Captures open Firefox/Chromium tabs and reopens them with the restored window
+- **Keyboard Navigation** — Walk, restore, and delete profiles with ↑/↓, Enter, and Delete
 - **Desktop Notifications** — Feedback on snapshot/save/restore/delete actions
 
 ## Installation
@@ -51,8 +53,25 @@ omarchy plugin remove davedes.workspace-restorer
 1. Click the bar widget to open the panel
 2. Click **Take Snapshot** to capture your current window layout
 3. Enter a name for the profile (e.g., "coding", "media")
-4. Click a profile name to restore that layout
-5. Click the delete action to remove a profile
+4. Click a profile name — or select it with ↑/↓ and press Enter — to restore that layout
+5. Click the delete action (or press Delete) to remove a profile; you'll be asked to confirm
+
+### Keyboard
+
+The panel is fully keyboard navigable, so you can restore a layout without
+leaving the keys:
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` or `k` / `j` | Move between profiles |
+| `Enter` | Restore the selected profile |
+| `Delete` | Delete the selected profile (asks first) |
+| `Esc` | Close the panel |
+| `Tab` | Switch to the next bar panel |
+
+Mouse and keyboard share a single cursor, so exactly one profile is highlighted
+at a time. Dismissing the panel while the save prompt is open discards the
+pending snapshot.
 
 ## How It Works
 
@@ -68,6 +87,23 @@ omarchy plugin remove davedes.workspace-restorer
 - [Omarchy](https://omarchy.org/) Linux
 - Hyprland compositor
 - Quickshell (for the shell framework)
+
+## Troubleshooting
+
+**A restore says "partially failed".** Some dispatches were rejected by Hyprland.
+The full per-step log is kept at:
+
+```
+~/.config/omarchy/workspace-restorer/last-restore.log
+```
+
+It records every move, float, focus and launch attempt with its output, so you
+can see which window refused to go where.
+
+**A browser's tabs didn't come back.** Tab capture only works for browsers that
+keep a readable session file (Firefox always; Chromium only when launched with
+`--remote-debugging-port` or via the SNSS session files). Restore closes and
+relaunches a browser window whose tabs were captured, so expect a brief flash.
 
 ## License
 

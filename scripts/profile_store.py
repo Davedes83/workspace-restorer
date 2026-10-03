@@ -193,13 +193,87 @@ def cmd_save():
     if len(payload) > MAX_PROFILE_BYTES:
         raise ValueError("profile too large after validation")
     path = os.path.join(dirname, name + ".json")
-    fd = _open_regular(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    _atomic_write(path, payload)
+
+
+def _atomic_write(path, payload):
+    """Replace ``path`` with ``payload`` atomically.
+
+    A direct ``O_TRUNC`` write is not crash-safe: the old profile is destroyed
+    by the truncate, so a crash, OOM kill, or full disk partway through loses
+    the existing profile AND fails to write the new one. Instead we write a
+    sibling temp file, fsync it, then ``os.replace`` it into position - rename
+    within a directory is atomic, so a reader sees either the whole old file or
+    the whole new one, never a truncated mix.
+
+    The temp name is dot-prefixed and carries a PID, so it can never collide
+    with a listed profile (``_NAME_RE`` requires a leading alphanumeric) and
+    concurrent writers get distinct names. O_EXCL|O_NOFOLLOW means we refuse to
+    follow or clobber anything already at that name.
+
+    The destination is lstat'd first and refused unless it is absent or an
+    existing regular user-owned file. This is required, not belt-and-braces:
+    ``os.replace`` swaps the directory entry, so it would happily clobber a
+    planted symlink (replacing the link, never touching its target) and report
+    success - silently discarding the refusal the old O_TRUNC|O_NOFOLLOW open
+    gave us for free.
+    """
     try:
-        _require_regular(fd, path)
-        os.write(fd, payload)
+        st = os.lstat(path)
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISLNK(st.st_mode):
+            raise ValueError("refusing to save over a symlink")
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("refusing to save over a non-regular file")
+        if st.st_uid != os.geteuid():
+            raise ValueError("refusing to save over a file not owned by the user")
+
+    dirname = os.path.dirname(path)
+    tmp = os.path.join(dirname, ".%s.json.tmp-%d" % (
+        os.path.basename(path)[:-5], os.getpid()))
+    fd = _open_regular(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    try:
+        _require_regular(fd, tmp)
+        # Loop: a single os.write can be partial on a full disk / large buffer.
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short write saving profile")
+            view = view[written:]
         os.fsync(fd)
-    finally:
+    except Exception:
         os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    else:
+        os.close(fd)
+
+    try:
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    # fsync the directory so the rename itself is durable, not just the bytes.
+    try:
+        dirfd = os.open(dirname, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        os.fsync(dirfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dirfd)
 
 
 def cmd_load():

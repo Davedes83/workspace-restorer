@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.2.0] - 2026-10-03
+
+### Fixed
+
+- **Hover feedback on the delete icon, Save and Cancel never worked.** Those handlers assigned `color` on an enclosing `RowLayout`/`Column`, which have no such property, so QML threw `TypeError: Cannot assign to non-existent property "color"` on every mouse enter/leave. Each now targets a named `id` instead of walking the parent chain.
+- **A snapshot could latch the widget into a permanent "Capturing..." state.** Three of the four capture stages reset the flag on failure, but the tab-capture stage did not, and no stage had a timeout — a hung capture left every action disabled until the shell was restarted. All failure paths now funnel through one `failSnapshot()` teardown, the final assembly is wrapped in try/catch, and a 45s watchdog kills stuck processes.
+- **Closing the panel mid-prompt kept a stale snapshot.** Dismissing the panel while the save prompt was open left the prompt and its captured layout alive, so reopening later offered to save a capture that was long out of date. It is now discarded on close.
+- **A failed save could destroy the profile it was replacing.** The store wrote with `O_TRUNC`, so a crash, OOM kill, or full disk partway through lost the old profile *and* failed to write the new one. Saves now stage through a sibling temp file, `fsync`, then `os.replace` — a reader sees either the whole old file or the whole new one.
+- **Restore always reported success.** Every generated step was suffixed `|| true`, so the script always exited 0 and the widget reported "Restored N windows" even when every launch failed — with the log holding the only evidence deleted on exit. Failed dispatches are now counted and reported as `Restored 3/5 windows`, and the log is preserved at `~/.config/omarchy/workspace-restorer/last-restore.log`.
+- **A window whose class differed only in case was duplicated on restore.** Class matching was case-sensitive while every other class decision was not, so a mismatch left the live window open *and* spawned a replacement. Matching is now case-insensitive.
+- **Browser relaunch raced the browser's own shutdown.** Restore closed matching browser windows and waited a fixed 1.5s before relaunching; a browser that outlived the sleep swallowed the relaunch as a command-line message and the tabs never reopened. It now polls for the process to actually exit.
+- **Window counts in the restore summary were double-counted**, because a floating window that also needed moving appeared in both the move and float lists.
+
+### Changed
+
+- **The panel was styled with the bar's colours, not the popup's.** `Color.bar.*` painted every row with `Qt.darker(barBackground, 1.05)` — a ~2% shift against a panel background of nearly the same value, so rows read as flat as the background and ignored the active theme. The panel now uses the popup/foreground colour roles throughout.
+- **Profiles past the seventh were unreachable.** The card had a fixed 400px height with no scrolling. The profile list is now a scrolling `ListView` capped at a sensible viewport.
+- **The panel is now keyboard navigable.** ↑/↓ (or j/k) walks the profiles, Enter restores, Delete removes, Esc closes and Tab switches panels. Mouse and keyboard drive one shared cursor, so exactly one row is ever highlighted.
+- **Deleting a profile asks first.** A single click on a 22px icon destroyed a profile irrecoverably; it now goes through a confirmation dialog.
+- Rebuilt on the shell's own UI kit — `CursorSurface` rows, `PanelActionButton` with a themed destructive tint and tooltip, `PanelSeparator`, `qs.Ui.Button`/`TextField`, and `Style` spacing/typography tokens so the panel follows the user's theme instead of hardcoded pixels. Added an empty state so an empty list explains itself.
+- The security-critical validators and command builders now live in a single shared module (`restoreLogic.js`) that both the widget and the test suite use, replacing two hand-maintained copies that could drift. The test suite now exercises the code that actually ships.
+
+### Verified
+
+- Large-profile saves were probed rather than assumed: a 221 KB snapshot (6 windows × 250 tabs, ~3.4× the 64 KiB pipe buffer) round-trips intact through the real save path. Quickshell buffers the overflow internally, so the single `write()` plus stdin close is correct.
+
 ## [1.1.3] - 2026-09-11
 
 ### Fix
