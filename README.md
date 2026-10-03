@@ -98,7 +98,7 @@ The plugin uses these commands, all of which ship with a standard Omarchy instal
 | `notify-send` | `libnotify` | action feedback notifications |
 | `curl` | `curl` | optional — Chromium tab capture over `--remote-debugging-port` only |
 
-No npm or pip install step is required; `npm test` exists only for running the unit tests. If an optional command is missing, the feature that needs it is skipped and the rest of the plugin keeps working.
+Nothing needs to be fetched or compiled: the bundled Python scripts run straight from the plugin directory, and the unit tests are developer-only. If an optional command is missing, the feature that needs it is skipped and the rest of the plugin keeps working.
 
 ## Data and removal
 
