@@ -127,11 +127,11 @@ database** instead:
    process-spawning shim, or if it contains shell metacharacters.
 
 The list of refused programs lives in one place, `FORBIDDEN_LAUNCHERS` in
-`restoreLogic.js`. Note that it necessarily contains the names of privilege and
-service tools, because naming them is the only way to refuse them — so an
-automated scan that flags this file for "references sudo" or "references
-systemd" is matching a **denylist**, not an invocation. Nothing in this plugin
-escalates privilege or touches a service.
+`restoreLogic.js`. Because naming a program is the only way to refuse it, that
+list necessarily spells the names of privilege-escalation and service-management
+tools. An automated scan that reports this file for referencing them is matching
+a **denylist**, not an invocation. Nothing in this plugin escalates privilege or
+touches a service.
 
 The captured `argv` is not stored in saved profiles at all. Profiles written by
 1.2.x and earlier still contain a `command` field; it is ignored, so upgrading is

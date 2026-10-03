@@ -73,9 +73,9 @@ function normalizeClassKey(cls) {
 // still refused.
 //
 // REVIEWER NOTE: this list necessarily spells the names of privilege and
-// service tools (sudo, systemctl, systemd-run, ...) because naming a program
-// is the only way to refuse it. An automated scan that reports "references
-// sudo" or "references systemd" against this file is matching a DENYLIST. This
+// service-management tools because naming a program is the only way to refuse
+// it. An automated scan that reports "references a privilege tool" or
+// "references a service tool" against this file is matching a DENYLIST. This
 // plugin never escalates privilege and never touches a service.
 var FORBIDDEN_LAUNCHERS = {
     "sh": 1, "bash": 1, "dash": 1, "ash": 1, "zsh": 1, "ksh": 1, "mksh": 1,
