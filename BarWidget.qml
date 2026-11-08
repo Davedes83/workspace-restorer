@@ -490,26 +490,29 @@ Panel {
                 onClicked: root.discardSnapshot()
             }
         }
-    }
 
-    // Delete goes through a confirmation. A single unconfirmed click on a
-    // 22px icon used to destroy a profile irrecoverably.
-    ConfirmDialog {
-        id: deleteDialog
-        parent: panel
-        anchors.fill: parent
-        message: "Delete profile?\n\n" + (root.pendingDeleteName || "")
-        cancelText: "Cancel"
-        confirmText: "Delete"
-        onConfirmed: {
-            var name = root.pendingDeleteName
-            root.pendingDeleteName = null
-            deleteDialog.opened = false
-            if (name) root.doDelete(name)
-        }
-        onCanceled: {
-            root.pendingDeleteName = null
-            deleteDialog.opened = false
+        // Delete goes through a confirmation. A single unconfirmed click on a
+        // 22px icon used to destroy a profile irrecoverably.
+        // Declared inside the KeyboardPanel (a PanelWindow, not an Item) so it
+        // lands in the panel card; parenting it to the window itself made it
+        // fill the transparent window surface and render off-screen.
+        ConfirmDialog {
+            id: deleteDialog
+            anchors.fill: parent
+            z: 20
+            message: "Delete profile?\n\n" + (root.pendingDeleteName || "")
+            cancelText: "Cancel"
+            confirmText: "Delete"
+            onConfirmed: {
+                var name = root.pendingDeleteName
+                root.pendingDeleteName = null
+                deleteDialog.opened = false
+                if (name) root.doDelete(name)
+            }
+            onCanceled: {
+                root.pendingDeleteName = null
+                deleteDialog.opened = false
+            }
         }
     }
 
