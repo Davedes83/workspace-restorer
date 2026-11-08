@@ -37,6 +37,16 @@ Panel {
     property var launcherIndex: ({})
     property var pendingSnapshot: null
     property bool showingNameInput: false
+    // Steer keyboard focus into the name field when the save view appears and
+    // back to the key catcher when it goes away, so typing works immediately.
+    onShowingNameInputChanged: Qt.callLater(function() {
+        if (root.showingNameInput) {
+            saveNameField.forceActiveFocus()
+            saveNameField.selectAll()
+        } else {
+            keyCatcher.forceActiveFocus()
+        }
+    })
     property var _monitorsCaptured: []
 
     // NOTE: the hand-rolled hoverBg / selectedBg / deleteBg fills that lived here
@@ -265,6 +275,9 @@ Panel {
             id: mainColumn
             anchors.fill: parent
             spacing: Style.spacing.md
+            // Hide while the save-name view is up; otherwise both columns
+            // fill the same area and draw on top of each other.
+            visible: !root.showingNameInput
 
             PanelHero {
                 width: parent.width
@@ -490,26 +503,29 @@ Panel {
                 onClicked: root.discardSnapshot()
             }
         }
-    }
 
-    // Delete goes through a confirmation. A single unconfirmed click on a
-    // 22px icon used to destroy a profile irrecoverably.
-    ConfirmDialog {
-        id: deleteDialog
-        parent: panel
-        anchors.fill: parent
-        message: "Delete profile?\n\n" + (root.pendingDeleteName || "")
-        cancelText: "Cancel"
-        confirmText: "Delete"
-        onConfirmed: {
-            var name = root.pendingDeleteName
-            root.pendingDeleteName = null
-            deleteDialog.opened = false
-            if (name) root.doDelete(name)
-        }
-        onCanceled: {
-            root.pendingDeleteName = null
-            deleteDialog.opened = false
+        // Delete goes through a confirmation. A single unconfirmed click on a
+        // 22px icon used to destroy a profile irrecoverably.
+        // Declared inside the KeyboardPanel (a PanelWindow, not an Item) so it
+        // lands in the panel card; parenting it to the window itself made it
+        // fill the transparent window surface and render off-screen.
+        ConfirmDialog {
+            id: deleteDialog
+            anchors.fill: parent
+            z: 20
+            message: "Delete profile?\n\n" + (root.pendingDeleteName || "")
+            cancelText: "Cancel"
+            confirmText: "Delete"
+            onConfirmed: {
+                var name = root.pendingDeleteName
+                root.pendingDeleteName = null
+                deleteDialog.opened = false
+                if (name) root.doDelete(name)
+            }
+            onCanceled: {
+                root.pendingDeleteName = null
+                deleteDialog.opened = false
+            }
         }
     }
 
