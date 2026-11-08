@@ -37,6 +37,16 @@ Panel {
     property var launcherIndex: ({})
     property var pendingSnapshot: null
     property bool showingNameInput: false
+    // Steer keyboard focus into the name field when the save view appears and
+    // back to the key catcher when it goes away, so typing works immediately.
+    onShowingNameInputChanged: Qt.callLater(function() {
+        if (root.showingNameInput) {
+            saveNameField.forceActiveFocus()
+            saveNameField.selectAll()
+        } else {
+            keyCatcher.forceActiveFocus()
+        }
+    })
     property var _monitorsCaptured: []
 
     // NOTE: the hand-rolled hoverBg / selectedBg / deleteBg fills that lived here
@@ -265,6 +275,9 @@ Panel {
             id: mainColumn
             anchors.fill: parent
             spacing: Style.spacing.md
+            // Hide while the save-name view is up; otherwise both columns
+            // fill the same area and draw on top of each other.
+            visible: !root.showingNameInput
 
             PanelHero {
                 width: parent.width
