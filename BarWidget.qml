@@ -195,7 +195,7 @@ Panel {
         id: button
         anchors.fill: parent
         bar: root.bar
-        text: "󰆞"
+        text: "󰆓"
         onPressed: function(b) {
             root.toggle()
         }
@@ -274,7 +274,7 @@ Panel {
                                                              : "snapshot and restore"
                 iconComponent: Component {
                     Text {
-                        text: root.isSnapshotting ? "󰓦" : root.isRestoring ? "󰅧" : "󰆞"
+                        text: root.isSnapshotting ? "󰄄" : root.isRestoring ? "󰁯" : "󰆓"
                         color: Color.accent
                         font.family: Style.font.family
                         font.pixelSize: Style.font.display
@@ -292,7 +292,7 @@ Panel {
                 enabled: !root.isRestoring && !root.isSnapshotting
                 // A spinning glyph makes the in-flight state legible rather
                 // than just greyed out.
-                iconText: root.isSnapshotting ? "󰓦" : "󰅧"
+                iconText: root.isSnapshotting ? "󰄄" : "󰆓"
                 iconSpinning: root.isSnapshotting
                 text: root.isSnapshotting ? "Capturing..."
                     : root.isRestoring ? "Restoring..."
@@ -453,7 +453,7 @@ Panel {
                 meta: (root.pendingSnapshot ? root.pendingSnapshot.windows.length : 0) + " window(s) captured"
                 iconComponent: Component {
                     Text {
-                        text: "󰅧"
+                        text: "󰆓"
                         color: Color.accent
                         font.family: Style.font.family
                         font.pixelSize: Style.font.display
